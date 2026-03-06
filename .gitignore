@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.o
+.ipynb_checkpoints/
+*.egg-info/
+*.png
+*.pdf
+output/
+.idea/

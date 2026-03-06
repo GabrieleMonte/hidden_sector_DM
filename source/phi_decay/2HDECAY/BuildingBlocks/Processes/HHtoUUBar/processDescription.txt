@@ -1,0 +1,5 @@
+HH -> U,UBar
+MHH,MU,MU
+0
+0
+1

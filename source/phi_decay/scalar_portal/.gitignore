@@ -1,0 +1,6 @@
+*.pyc
+coverage-html
+.coverage
+plots
+*.DS_Store
+*.~undo-tree~
