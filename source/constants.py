@@ -53,6 +53,10 @@ SM_MYQ = {
     "e":   (Me,   -1.0, -0.5, -1.0, 1),
     "mu":  (Mmu,  -1.0, -0.5, -1.0, 1),
     "tau": (Mtau, -1.0, -0.5, -1.0, 1),
+    # neutrinos (left-handed only: Q=0, YL=-1/2, YR=0)
+    "nu_e":   (0.0, 0.0, -0.5, 0.0, 1),
+    "nu_mu":  (0.0, 0.0, -0.5, 0.0, 1),
+    "nu_tau": (0.0, 0.0, -0.5, 0.0, 1),
     # up-type quarks
     "u": (Mu, 2.0/3, 1.0/6,  2.0/3, 3),
     "c": (Mc, 2.0/3, 1.0/6,  2.0/3, 3),
@@ -74,4 +78,29 @@ BL_FERMIONS = {
     "e": (Me, -1.0, 1), "mu": (Mmu, -1.0, 1), "tau": (Mtau, -1.0, 1),
     # neutrinos: (B-L) = -1
     "nu_e": (0.0, -1.0, 1), "nu_mu": (0.0, -1.0, 1), "nu_tau": (0.0, -1.0, 1),
+}
+
+# --- Li-Lj charge tables ---
+# key : (mass, charge, Nc)  — only fermions with nonzero charge
+LILJ_FERMIONS = {
+    "e-mu": {
+        "e": (Me, +1.0, 1), "nu_e": (0.0, +1.0, 1),
+        "mu": (Mmu, -1.0, 1), "nu_mu": (0.0, -1.0, 1),
+    },
+    "mu-tau": {
+        "mu": (Mmu, +1.0, 1), "nu_mu": (0.0, +1.0, 1),
+        "tau": (Mtau, -1.0, 1), "nu_tau": (0.0, -1.0, 1),
+    },
+    "e-tau": {
+        "e": (Me, +1.0, 1), "nu_e": (0.0, +1.0, 1),
+        "tau": (Mtau, -1.0, 1), "nu_tau": (0.0, -1.0, 1),
+    },
+}
+
+# --- Baryon fermion table ---
+# key : (mass, baryon number, Nc)
+BARYON_FERMIONS = {
+    "u": (Mu, 1.0/3, 3), "d": (Md, 1.0/3, 3),
+    "s": (Ms, 1.0/3, 3), "c": (Mc, 1.0/3, 3),
+    "b": (Mb, 1.0/3, 3), "t": (Mt, 1.0/3, 3),
 }

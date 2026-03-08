@@ -9,12 +9,14 @@ The code solves the coupled Boltzmann equations for the dark matter yield and da
 
 ## Models
 
-Three portal scenarios are implemented:
+Five portal scenarios are implemented:
 
 | Model | Mediator | Portal coupling | Reference |
 |-------|----------|----------------|-----------|
 | `VectorPortal` | Dark photon (spin-1) | Kinetic mixing with hypercharge | -- |
 | `BLPortal` | Dark photon (spin-1) | Kinetic mixing with U(1)_{B-L} | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
+| `LiLjPortal` | Dark photon (spin-1) | Kinetic mixing with U(1)_{L_i - L_j} | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
+| `BaryonPortal` | Dark photon (spin-1) | Kinetic mixing with U(1)_B | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
 | `HiggsPortal` | Dark scalar (spin-0) | Scalar mixing with SM Higgs | -- |
 
 All models implement a common `DarkSectorModel` interface providing:
@@ -49,7 +51,7 @@ print(f"mXstar = {res['mXstar']:.4e} GeV")
 ```
 source/
   SecludedDM.py    # Public API (re-exports)
-  model.py         # DarkSectorModel, VectorPortal, BLPortal, HiggsPortal
+  model.py         # DarkSectorModel, VectorPortal, BLPortal, LiLjPortal, BaryonPortal, HiggsPortal
   solver.py        # BoltzmannSolver, find_mXstar
   cosmology.py     # Cosmology (g_star tables, thermodynamics)
   constants.py     # SM parameters, fermion tables

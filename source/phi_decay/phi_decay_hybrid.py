@@ -97,11 +97,46 @@ def _scalar_portal_width(mS):
     return model.compute_branching_ratios(mS, theta=1.0).total_width
 
 
+# Channel name mapping: scalar_portal verbose -> standardised
+_SP_CHANNEL_MAP = {
+    "S -> e+ e-":     "ee",
+    "S -> mu+ mu-":   "mumu",
+    "S -> tau+ tau-":  "tautau",
+    "S -> s sbar":    "ss",
+    "S -> c cbar":    "cc",
+    "S -> b bbar":    "bb",
+    "S -> t tbar":    "tt",
+    "S -> g g":       "gg",
+    "S -> pi0 pi0":   "pi0pi0",
+    "S -> pi+ pi-":   "pipi",
+    "S -> K0 Kbar0":  "K0K0",
+    "S -> K+ K-":     "KK",
+    "S -> mesons...":  "mesons",
+}
+
+
+def _scalar_portal_partial_widths(mS):
+    """Per-channel normalised widths [GeV] from scalar_portal (m < 5 GeV)."""
+    if not _init_scalar_portal():
+        return {}
+    model = _sp_light if mS < _M_DISPERSIVE_MAX else _sp_heavy
+    res = model.compute_branching_ratios(mS, theta=1.0)
+    out = {}
+    for sp_name, w in res.decay.widths.items():
+        key = _SP_CHANNEL_MAP.get(sp_name, sp_name)
+        if float(w) > 0:
+            out[key] = float(w)
+    return out
+
+
 # ---------------------------------------------------------------------------
-#  (2)  High-mass regime:  HDECAY  (m_phi >= 5 GeV)
+#  (2)  High-mass regime:  HDECAY  (5 GeV <= m_phi <= 500 GeV)
 # ---------------------------------------------------------------------------
 from .hdecay_interface import (hdecay_branching_ratios as _hdecay_br,
                                hdecay_total_width      as _hdecay_width)
+
+_M_HDECAY_MAX = 500.0  # Above ~500 GeV, HDECAY's un-resummed EW Sudakov
+                       # logs inflate WW/ZZ; tree-level is more reliable.
 
 # Internal cache: mass (rounded to 0.01 GeV) -> full result dict
 _hdecay_cache = {}
@@ -118,6 +153,104 @@ def _hdecay_result(mS):
 def _hdecay_total_width(mS):
     """SM total width Gamma_SM(m_H = m_phi) [GeV] from HDECAY."""
     return _hdecay_result(mS)['total_width']
+
+
+# ---------------------------------------------------------------------------
+#  (2b)  Very high mass: tree-level with exact kinematics (m_phi > 500 GeV)
+#
+#  HDECAY's NLO EW corrections contain un-resummed Sudakov logarithms
+#  ~log^n(m_H/M_W) that become uncontrolled above ~1 TeV (producing
+#  negative partial widths by 1.5 TeV).  For m_phi > 500 GeV the tree-level
+#  formulas with full mass dependence are the appropriate baseline.
+# ---------------------------------------------------------------------------
+_GF = 1.1663787e-5   # Fermi constant [GeV^-2]
+_MW = 80.385
+_MZ = 91.1876
+_MT = 173.2
+_MB = 4.18
+_MC = 1.28
+_MTAU = 1.777
+_MMU = 0.10566
+_ALPHA_S_MZ = 0.118
+
+
+def _alpha_s_1loop(mu, nf=6):
+    """One-loop running alpha_s."""
+    b0 = (33 - 2*nf) / (12*np.pi)
+    return _ALPHA_S_MZ / (1 + _ALPHA_S_MZ * b0 * np.log(mu / 91.1876))
+
+
+def _tree_level_width(mS):
+    """
+    SM-like Gamma/sin^2(eps) [GeV] from tree-level formulas with exact
+    kinematics and LO QCD corrections.  Used for m_phi > 500 GeV.
+
+    Channels: ff-bar (all flavours), WW, ZZ, gg.
+    Does NOT include hh (added separately).
+    """
+    w = 0.0
+    pi = np.pi
+
+    # ff-bar channels: Gamma = n_c G_F m_f^2 m_phi / (4 sqrt(2) pi) * beta^3 * (1 + Delta_QCD)
+    for nc, mf, is_q in [(3, _MT, True), (3, _MB, True), (3, _MC, True),
+                          (1, _MTAU, False), (1, _MMU, False)]:
+        if mS > 2*mf:
+            beta = np.sqrt(1 - (2*mf/mS)**2)
+            gf = nc * _GF * mf**2 * mS / (4*np.sqrt(2)*pi) * beta**3
+            if is_q:
+                aS = _alpha_s_1loop(max(mS, 2*mf))
+                gf *= (1 + 5.67 * aS/pi)
+            w += gf
+
+    # WW: Gamma = G_F m^3/(8 sqrt(2) pi) * sqrt(1-x)(1-x+3x^2/4)
+    xW = (2*_MW/mS)**2
+    if xW < 1:
+        w += _GF*mS**3/(8*np.sqrt(2)*pi) * np.sqrt(1-xW) * (1-xW+0.75*xW**2)
+
+    # ZZ: Gamma = G_F m^3/(16 sqrt(2) pi) * sqrt(1-x)(1-x+3x^2/4)
+    xZ = (2*_MZ/mS)**2
+    if xZ < 1:
+        w += _GF*mS**3/(16*np.sqrt(2)*pi) * np.sqrt(1-xZ) * (1-xZ+0.75*xZ**2)
+
+    # gg (top-loop, high-mass limit): Gamma = G_F alpha_s^2 m^3/(36 sqrt(2) pi^3)
+    aS = _alpha_s_1loop(mS)
+    w += _GF * aS**2 * mS**3 / (36*np.sqrt(2)*pi**3)
+
+    return w
+
+
+def _tree_level_partial_widths(mS):
+    """Partial width dict from tree-level for m_phi > 500 GeV."""
+    out = {}
+    pi = np.pi
+
+    def _gff(nc, mf, is_q):
+        if mS <= 2*mf: return 0.0
+        beta = np.sqrt(1 - (2*mf/mS)**2)
+        g = nc * _GF * mf**2 * mS / (4*np.sqrt(2)*pi) * beta**3
+        if is_q:
+            aS = _alpha_s_1loop(max(mS, 2*mf))
+            g *= (1 + 5.67 * aS/pi)
+        return g
+
+    out['tt']  = _gff(3, _MT, True)
+    out['bb']  = _gff(3, _MB, True)
+    out['cc']  = _gff(3, _MC, True)
+    out['ss']  = 0.0  # negligible at TeV scale
+    out['tautau'] = _gff(1, _MTAU, False)
+    out['mumu']   = _gff(1, _MMU, False)
+
+    xW = (2*_MW/mS)**2
+    out['WW'] = _GF*mS**3/(8*np.sqrt(2)*pi)*np.sqrt(1-xW)*(1-xW+0.75*xW**2) if xW<1 else 0.0
+    xZ = (2*_MZ/mS)**2
+    out['ZZ'] = _GF*mS**3/(16*np.sqrt(2)*pi)*np.sqrt(1-xZ)*(1-xZ+0.75*xZ**2) if xZ<1 else 0.0
+
+    aS = _alpha_s_1loop(mS)
+    out['gg'] = _GF * aS**2 * mS**3 / (36*np.sqrt(2)*pi**3)
+    out['gamgam'] = 0.0
+    out['Zgam']   = 0.0
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -157,7 +290,7 @@ def phi_total_width_normalised(mS, hh_coupling='singlet'):
     Parameters
     ----------
     mS : float
-        Scalar mediator mass [GeV].  Valid: 0.01 - 1000.
+        Scalar mediator mass [GeV].  Valid: 0.01 - 10^5.
     hh_coupling : str
         'singlet' (default) or 'zero'.
     """
@@ -168,8 +301,10 @@ def phi_total_width_normalised(mS, hh_coupling='singlet'):
     # SM-like width (all channels except hh)
     if mS < _M_SCALAR_PORTAL_MAX:
         w_sm = _scalar_portal_width(mS)
-    else:
+    elif mS <= _M_HDECAY_MAX:
         w_sm = _hdecay_total_width(mS)
+    else:
+        w_sm = _tree_level_width(mS)
 
     # Model-dependent hh on top
     w_hh = width_to_hh(mS, coupling=hh_coupling)
@@ -204,8 +339,20 @@ def phi_partial_widths(mS, hh_coupling='singlet'):
     w_hh = width_to_hh(mS, coupling=hh_coupling)
 
     if mS < _M_SCALAR_PORTAL_MAX:
-        w_sp = _scalar_portal_width(mS)
-        return {'total_sp': w_sp, 'hh': w_hh, 'total': w_sp + w_hh}
+        out = _scalar_portal_partial_widths(mS)
+        if not out:
+            # scalar_portal unavailable — fall back to total only
+            w_sp = _scalar_portal_width(mS)
+            return {'total_sp': w_sp, 'hh': w_hh, 'total': w_sp + w_hh}
+        out['hh'] = w_hh
+        out['total'] = sum(out.values())
+        return out
+
+    if mS > _M_HDECAY_MAX:
+        out = _tree_level_partial_widths(mS)
+        out['hh'] = w_hh
+        out['total'] = sum(out.values())
+        return out
 
     r = _hdecay_result(mS)
     w_tot_sm = r['total_width']   # HDECAY total SM width [GeV]

@@ -4,6 +4,8 @@ Dark-sector model interface and concrete implementations.
 DarkSectorModel : abstract base class defining the rate interface
 VectorPortal    : secluded dark sector with kinetic mixing (hypercharge)
 BLPortal        : secluded dark sector with kinetic mixing (B-L)
+LiLjPortal      : secluded dark sector with kinetic mixing (Li-Lj)
+BaryonPortal    : secluded dark sector with kinetic mixing (baryon number)
 HiggsPortal     : secluded dark sector with scalar mixing
 """
 
@@ -12,7 +14,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .constants import SM_MYQ, BL_FERMIONS, MZ, gW, sW, cW, gY as gY_SM
+from .constants import (SM_MYQ, BL_FERMIONS, LILJ_FERMIONS, BARYON_FERMIONS,
+                        MZ, gW, sW, cW, gY as gY_SM)
 
 
 # =====================================================================
@@ -65,6 +68,26 @@ class DarkSectorModel(ABC):
     @abstractmethod
     def decay_width_to_SM(self, epsX: float) -> float:
         """Total decay width Gamma(Y -> SM) for portal coupling epsX."""
+
+    @abstractmethod
+    def branching_ratios_to_SM(self) -> dict:
+        """Branching ratios for mediator decay to SM final states.
+
+        Returns dict {channel: BR} where channel names follow the
+        convention: 'ee', 'mumu', 'tautau', 'uu', 'dd', 'ss', 'cc',
+        'bb', 'tt', 'nunu_e', 'nunu_mu', 'nunu_tau', 'gg', 'gamgam',
+        'Zgam', 'WW', 'ZZ', 'hh', 'pipi', 'KK', etc.
+
+        Branching ratios are independent of the portal coupling epsX.
+        """
+
+
+# Fermion key -> pair channel name
+_PAIR_NAME = {
+    "e": "ee", "mu": "mumu", "tau": "tautau",
+    "u": "uu", "d": "dd", "s": "ss", "c": "cc", "b": "bb", "t": "tt",
+    "nu_e": "nunu_e", "nu_mu": "nunu_mu", "nu_tau": "nunu_tau",
+}
 
 
 # =====================================================================
@@ -158,6 +181,18 @@ class VectorPortal(DarkSectorModel):
     def decay_width_to_SM(self, epsX: float) -> float:
         return self.decay_width_to_all(self.mY, epsX)
 
+    def branching_ratios_to_SM(self) -> dict:
+        partials = {}
+        total = 0.0
+        for f, (mf, *_rest) in SM_MYQ.items():
+            if self.mY > 2.0 * mf:
+                w = self.decay_width_to_ff(f, self.mY, 1.0)
+                partials[_PAIR_NAME[f]] = w
+                total += w
+        if total <= 0:
+            return {ch: 0.0 for ch in partials}
+        return {ch: w / total for ch, w in partials.items()}
+
     # ----------------------------------------------------------
     #  Z'-fermion couplings
     # ----------------------------------------------------------
@@ -188,7 +223,7 @@ class VectorPortal(DarkSectorModel):
         r2  = 4.0 * mf**2 / mA**2
         return (NCf * mA / (12.0 * np.pi)
                 * np.sqrt(1.0 - r2)
-                * (gVf**2 * (1.0 - r2) + gAf**2 * (1.0 + 2.0 * mf**2 / mA**2)))
+                * (gVf**2 * (1.0 + 0.5 * r2) + gAf**2 * (1.0 - r2)))
 
     @staticmethod
     def decay_width_to_all(mA: float, epsX: float) -> float:
@@ -352,6 +387,270 @@ class BLPortal(DarkSectorModel):
                 f, self.mY, epsX, self.g_BL, self.m_ZBL)
         return total
 
+    def branching_ratios_to_SM(self) -> dict:
+        partials = {}
+        total = 0.0
+        for f, (mf, _, Nc) in BL_FERMIONS.items():
+            if self.mY > 2.0 * mf:
+                w = self.decay_width_to_ff_BL(
+                    f, self.mY, 1.0, self.g_BL, self.m_ZBL)
+                partials[_PAIR_NAME[f]] = w
+                total += w
+        if total <= 0:
+            return {ch: 0.0 for ch in partials}
+        return {ch: w / total for ch, w in partials.items()}
+
+
+# =====================================================================
+#  LiLjPortal
+# =====================================================================
+
+_VALID_FLAVORS = ("e-mu", "mu-tau", "e-tau")
+
+@dataclass
+class LiLjPortal(DarkSectorModel):
+    """
+    Secluded dark sector coupled to the SM via L_i - L_j kinetic mixing.
+
+    The hidden-sector Z' mixes kinetically with the gauge boson of a
+    U(1)_{L_i - L_j} symmetry.  The Z' acquires purely vectorial couplings
+    to leptons and neutrinos of the two involved families (Eq. 10 of
+    arXiv:1912.08821).  Quarks are uncharged — the Z' decays entirely
+    to leptons at tree level.
+
+    Parameters
+    ----------
+    mX, mY : float
+        Dark-matter and mediator masses (GeV).
+    alphaX : float
+        Dark fine-structure constant.
+    flavor : str
+        Which lepton-flavor combination: 'e-mu', 'mu-tau', or 'e-tau'.
+    g_LiLj : float
+        U(1)_{L_i - L_j} gauge coupling.
+    m_ZLiLj : float
+        Mass of the Z_{L_i - L_j} gauge boson (GeV).
+    Delta1, Delta2 : float
+        Phenomenological coefficients for YYY->YY and YXX->XX.
+    Delta3 : float or None
+        Coefficient for YYX->YX.  If None, exact tree-level result.
+    """
+    mX: float = 100.0
+    mY: float = 10.0
+    gX: int   = 2
+    gY: int   = 3
+    alphaX: float = 1e-2
+    flavor: str = "mu-tau"
+    g_LiLj: float = 0.1
+    m_ZLiLj: float = 1000.0
+    include_antiparticlesX: bool = True
+    include_antiparticlesY: bool = False
+    Delta1: float = 0.5
+    Delta2: float = 0.5
+    Delta3: Optional[float] = None
+    xi_infl: float = 1.0
+
+    def __post_init__(self):
+        if self.flavor not in _VALID_FLAVORS:
+            raise ValueError(
+                f"flavor must be one of {_VALID_FLAVORS}, got '{self.flavor}'")
+        if self.Delta3 is None:
+            self.Delta3 = VectorPortal._Delta3_exact(self.mX / self.mY)
+        self._fermion_table = LILJ_FERMIONS[self.flavor]
+
+    # ----------------------------------------------------------
+    #  Li-Lj fermion couplings  (Eq. 10 of 1912.08821)
+    # ----------------------------------------------------------
+    @staticmethod
+    def gfv_gfa_LiLj(f: str, mZp: float, eps: float,
+                     g_LiLj: float, m_ZLiLj: float,
+                     fermion_table: dict):
+        """
+        Return (g_fV, g_fA) for fermion *f* in the Li-Lj portal.
+
+        g_fV = eps * g_{Li-Lj} * (Li-Lj)_f * |(m²_{ZLiLj} + m²_{Z'}) / (m²_{ZLiLj} - m²_{Z'})|
+        g_fA = 0
+        """
+        _, charge, _ = fermion_table[f]
+        mixing = abs((m_ZLiLj**2 + mZp**2) / (m_ZLiLj**2 - mZp**2))
+        gfV = eps * g_LiLj * charge * mixing
+        return gfV, 0.0
+
+    # ----------------------------------------------------------
+    #  DarkSectorModel interface
+    # ----------------------------------------------------------
+
+    def sigmav_XX_to_YY(self, TD: float) -> float:
+        return VectorPortal._sigmav_XX_to_YY_full(
+            self.mX, self.mY, self.alphaX, TD)
+
+    def sigmav_XX_to_YY_swave(self) -> float:
+        return VectorPortal._sigmav_XX_to_YY_swave(self.mX, self.alphaX)
+
+    def sigmav2_YYY_to_YY(self, TD: float) -> float:
+        return VectorPortal._sigmav2_YYY_to_YY(
+            self.mX, self.alphaX, TD, self.Delta1)
+
+    def sigmav2_YXX_to_XX(self) -> float:
+        return VectorPortal._sigmav2_YXX_to_XX(
+            self.mX, self.alphaX, self.Delta2)
+
+    def sigmav2_YYX_to_YX(self) -> float:
+        return VectorPortal._sigmav2_YYX_to_YX(
+            self.mX, self.alphaX, self.Delta3)
+
+    def decay_width_to_SM(self, epsX: float) -> float:
+        total = 0.0
+        for f, (mf, charge, Nc) in self._fermion_table.items():
+            if self.mY <= 2.0 * mf:
+                continue
+            gfV, _ = self.gfv_gfa_LiLj(
+                f, self.mY, epsX, self.g_LiLj, self.m_ZLiLj,
+                self._fermion_table)
+            r2 = 4.0 * mf**2 / self.mY**2
+            total += (Nc * self.mY / (12.0 * np.pi)
+                      * np.sqrt(1.0 - r2)
+                      * gfV**2 * (1.0 + 0.5 * r2))
+        return total
+
+    def branching_ratios_to_SM(self) -> dict:
+        partials = {}
+        total = 0.0
+        for f, (mf, charge, Nc) in self._fermion_table.items():
+            if self.mY <= 2.0 * mf:
+                continue
+            gfV, _ = self.gfv_gfa_LiLj(
+                f, self.mY, 1.0, self.g_LiLj, self.m_ZLiLj,
+                self._fermion_table)
+            r2 = 4.0 * mf**2 / self.mY**2
+            w = (Nc * self.mY / (12.0 * np.pi)
+                 * np.sqrt(1.0 - r2)
+                 * gfV**2 * (1.0 + 0.5 * r2))
+            partials[_PAIR_NAME[f]] = w
+            total += w
+        if total <= 0:
+            return {ch: 0.0 for ch in partials}
+        return {ch: w / total for ch, w in partials.items()}
+
+
+# =====================================================================
+#  BaryonPortal
+# =====================================================================
+
+@dataclass
+class BaryonPortal(DarkSectorModel):
+    """
+    Secluded dark sector coupled to the SM via baryon-number kinetic mixing.
+
+    The hidden-sector Z' mixes kinetically with the gauge boson of a
+    U(1)_B symmetry.  The Z' acquires purely vectorial couplings to
+    quarks proportional to their baryon number (Eq. 9 of arXiv:1912.08821).
+    Leptons are uncharged — the Z' decays entirely to quarks at tree level.
+
+    Parameters
+    ----------
+    mX, mY : float
+        Dark-matter and mediator masses (GeV).
+    alphaX : float
+        Dark fine-structure constant.
+    g_B : float
+        U(1)_B gauge coupling.
+    m_ZB : float
+        Mass of the Z_B gauge boson (GeV).
+    Delta1, Delta2 : float
+        Phenomenological coefficients for YYY->YY and YXX->XX.
+    Delta3 : float or None
+        Coefficient for YYX->YX.  If None, exact tree-level result.
+    """
+    mX: float = 100.0
+    mY: float = 10.0
+    gX: int   = 2
+    gY: int   = 3
+    alphaX: float = 1e-2
+    g_B: float = 0.1
+    m_ZB: float = 1000.0
+    include_antiparticlesX: bool = True
+    include_antiparticlesY: bool = False
+    Delta1: float = 0.5
+    Delta2: float = 0.5
+    Delta3: Optional[float] = None
+    xi_infl: float = 1.0
+
+    def __post_init__(self):
+        if self.Delta3 is None:
+            self.Delta3 = VectorPortal._Delta3_exact(self.mX / self.mY)
+
+    # ----------------------------------------------------------
+    #  Baryon-number couplings  (Eq. 9 of 1912.08821)
+    # ----------------------------------------------------------
+    @staticmethod
+    def gfv_gfa_B(f: str, mZp: float, eps: float,
+                  g_B: float, m_ZB: float):
+        """
+        Return (g_fV, g_fA) for quark *f* in the baryon portal.
+
+        g_fV = eps * g_B * B_f * |(m_ZB^2 + m_Zp^2) / (m_ZB^2 - m_Zp^2)|
+        g_fA = 0
+        """
+        _, B_charge, _ = BARYON_FERMIONS[f]
+        mixing = abs((m_ZB**2 + mZp**2) / (m_ZB**2 - mZp**2))
+        gfV = eps * g_B * B_charge * mixing
+        return gfV, 0.0
+
+    # ----------------------------------------------------------
+    #  DarkSectorModel interface
+    # ----------------------------------------------------------
+
+    def sigmav_XX_to_YY(self, TD: float) -> float:
+        return VectorPortal._sigmav_XX_to_YY_full(
+            self.mX, self.mY, self.alphaX, TD)
+
+    def sigmav_XX_to_YY_swave(self) -> float:
+        return VectorPortal._sigmav_XX_to_YY_swave(self.mX, self.alphaX)
+
+    def sigmav2_YYY_to_YY(self, TD: float) -> float:
+        return VectorPortal._sigmav2_YYY_to_YY(
+            self.mX, self.alphaX, TD, self.Delta1)
+
+    def sigmav2_YXX_to_XX(self) -> float:
+        return VectorPortal._sigmav2_YXX_to_XX(
+            self.mX, self.alphaX, self.Delta2)
+
+    def sigmav2_YYX_to_YX(self) -> float:
+        return VectorPortal._sigmav2_YYX_to_YX(
+            self.mX, self.alphaX, self.Delta3)
+
+    def decay_width_to_SM(self, epsX: float) -> float:
+        total = 0.0
+        for f, (mf, B_charge, Nc) in BARYON_FERMIONS.items():
+            if self.mY <= 2.0 * mf:
+                continue
+            gfV, _ = self.gfv_gfa_B(
+                f, self.mY, epsX, self.g_B, self.m_ZB)
+            r2 = 4.0 * mf**2 / self.mY**2
+            total += (Nc * self.mY / (12.0 * np.pi)
+                      * np.sqrt(1.0 - r2)
+                      * gfV**2 * (1.0 + 0.5 * r2))
+        return total
+
+    def branching_ratios_to_SM(self) -> dict:
+        partials = {}
+        total = 0.0
+        for f, (mf, B_charge, Nc) in BARYON_FERMIONS.items():
+            if self.mY <= 2.0 * mf:
+                continue
+            gfV, _ = self.gfv_gfa_B(
+                f, self.mY, 1.0, self.g_B, self.m_ZB)
+            r2 = 4.0 * mf**2 / self.mY**2
+            w = (Nc * self.mY / (12.0 * np.pi)
+                 * np.sqrt(1.0 - r2)
+                 * gfV**2 * (1.0 + 0.5 * r2))
+            partials[_PAIR_NAME[f]] = w
+            total += w
+        if total <= 0:
+            return {ch: 0.0 for ch in partials}
+        return {ch: w / total for ch, w in partials.items()}
+
 
 # =====================================================================
 #  HiggsPortal
@@ -495,3 +794,11 @@ class HiggsPortal(DarkSectorModel):
             )) / (64.0 * np.pi * (r + 2.0)**3 * (2.0*r + 1.0)**4
                   * (2.0*r**2*(r + 2.0) + r - 1.0)**2)
         return Fac / mX**5
+
+    def branching_ratios_to_SM(self) -> dict:
+        from .phi_decay import phi_branching_ratios
+        br = phi_branching_ratios(self.mY, hh_coupling=self.hh_coupling)
+        # Remove internal 'total' key — return only channel BRs
+        br.pop('total', None)
+        br.pop('total_sp', None)
+        return br
