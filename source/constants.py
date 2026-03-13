@@ -21,6 +21,16 @@ Mpip = 139.57039e-3
 MKp  = 493.677e-3
 MZ   = 91.1876
 MW   = 80.379
+Mh   = 125.10               # SM Higgs mass (GeV)
+
+# --- Higgs VEV ---
+vH   = 246.22                # Higgs VEV (GeV)
+
+# --- Nucleon mass ---
+mN   = 0.93891897            # average nucleon mass (GeV), (mp + mn) / 2
+
+# --- Unit conversion ---
+HBARC2 = 0.3893794e-27       # (hbar c)^2  (GeV^2 cm^2)
 
 # --- Planck mass (reduced) ---
 Mpl = 2.435e18

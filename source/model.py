@@ -15,7 +15,15 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .constants import (SM_MYQ, BL_FERMIONS, LILJ_FERMIONS, BARYON_FERMIONS,
-                        MZ, gW, sW, cW, gY as gY_SM)
+                        MZ, gW, sW, cW, gY as gY_SM, eC,
+                        Mh, vH, mN, HBARC2)
+
+# ---------------------------------------------------------------------------
+#  Direct detection helpers
+# ---------------------------------------------------------------------------
+_Q_u, _T3_u = 2.0 / 3.0, 0.5    # up-quark charge and weak isospin
+_Q_d, _T3_d = -1.0 / 3.0, -0.5  # down-quark charge and weak isospin
+_A_Xe, _Z_Xe = 131, 54           # Xenon-131 (LZ / XENON default)
 
 
 # =====================================================================
@@ -79,6 +87,22 @@ class DarkSectorModel(ABC):
         'Zgam', 'WW', 'ZZ', 'hh', 'pipi', 'KK', etc.
 
         Branching ratios are independent of the portal coupling epsX.
+        """
+
+    # --- Direct detection ---
+
+    @abstractmethod
+    def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
+        """Spin-independent DM-nucleon cross section [cm^2].
+
+        Parameters
+        ----------
+        epsX : float
+            Portal coupling (kinetic mixing parameter).
+        A_N : int
+            Atomic mass number of target (default: Xe-131).
+        Z_N : int
+            Atomic number of target (default: Xe, Z=54).
         """
 
 
@@ -192,6 +216,60 @@ class VectorPortal(DarkSectorModel):
         if total <= 0:
             return {ch: 0.0 for ch in partials}
         return {ch: w / total for ch, w in partials.items()}
+
+    def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
+        """
+        Spin-independent DM-nucleon cross section via Z-Z' mixing.
+
+        Full formula from Eq. 3.13 of arXiv:2509.08043, including both
+        Z and Z' exchange.  Significant isospin violation (sigma_n/sigma_p ~ 9).
+
+        Parameters
+        ----------
+        epsX : float
+            Kinetic mixing parameter.
+        A_N : int
+            Atomic mass number (default: Xe-131).
+        Z_N : int
+            Atomic number (default: Xe, Z=54).
+
+        Returns
+        -------
+        sigma : float
+            SI cross section [cm^2].
+        """
+        gD = np.sqrt(4.0 * np.pi * self.alphaX)
+        mZp = self.mY
+
+        # Z-Z' mixing angle
+        tan2xi = -2.0 * epsX * sW * MZ**2 / (MZ**2 - mZp**2)
+        xi = 0.5 * np.arctan(tan2xi)
+        s_xi, c_xi = np.sin(xi), np.cos(xi)
+
+        # DM couplings  (Eqs. 3.16-3.17)
+        V_chi_Z = gD * s_xi
+        V_chi_Zp = gD * c_xi
+
+        # Quark couplings  (Eqs. 3.14-3.15)
+        eswcw = eC / (sW * cW)
+        V_u_Z = (eC * epsX * s_xi * _Q_u
+                 + eswcw * (c_xi + epsX * sW * s_xi) * (_T3_u - sW**2 * _Q_u))
+        V_d_Z = (eC * epsX * s_xi * _Q_d
+                 + eswcw * (c_xi + epsX * sW * s_xi) * (_T3_d - sW**2 * _Q_d))
+        V_u_Zp = (eC * epsX * c_xi * _Q_u
+                  + eswcw * (s_xi - epsX * sW * c_xi) * (_T3_u - sW**2 * _Q_u))
+        V_d_Zp = (eC * epsX * c_xi * _Q_d
+                  + eswcw * (s_xi - epsX * sW * c_xi) * (_T3_d - sW**2 * _Q_d))
+
+        mu = self.mX * mN / (self.mX + mN)
+
+        bracket = 0.0
+        for m_i, Vchi, Vu, Vd in [(MZ,  V_chi_Z,  V_u_Z,  V_d_Z),
+                                   (mZp, V_chi_Zp, V_u_Zp, V_d_Zp)]:
+            bracket += Vchi * (Z_N * (2*Vu + Vd)
+                               + (A_N - Z_N) * (Vu + 2*Vd)) / (A_N * m_i**2)
+
+        return mu**2 / np.pi * bracket**2 * HBARC2
 
     # ----------------------------------------------------------
     #  Z'-fermion couplings
@@ -311,7 +389,7 @@ class BLPortal(DarkSectorModel):
     gX: int   = 2
     gY: int   = 3
     alphaX: float = 1e-2
-    g_BL: float = 0.1
+    g_BL: float = 1.0
     m_ZBL: float = 1000.0
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
@@ -400,6 +478,22 @@ class BLPortal(DarkSectorModel):
             return {ch: 0.0 for ch in partials}
         return {ch: w / total for ch, w in partials.items()}
 
+    def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
+        """
+        SI DM-nucleon cross section for the B-L portal.
+
+        Purely vectorial, isospin-universal: all quarks have (B-L) = 1/3,
+        so proton and neutron couplings are equal and the result is
+        independent of (A_N, Z_N).
+        """
+        gD = np.sqrt(4.0 * np.pi * self.alphaX)
+        mixing = abs((self.m_ZBL**2 + self.mY**2)
+                     / (self.m_ZBL**2 - self.mY**2))
+        gqV = epsX * self.g_BL * (1.0 / 3.0) * mixing
+        mu = self.mX * mN / (self.mX + mN)
+        amplitude = gD * 3.0 * gqV / self.mY**2
+        return mu**2 / np.pi * amplitude**2 * HBARC2
+
 
 # =====================================================================
 #  LiLjPortal
@@ -441,7 +535,7 @@ class LiLjPortal(DarkSectorModel):
     gY: int   = 3
     alphaX: float = 1e-2
     flavor: str = "mu-tau"
-    g_LiLj: float = 0.1
+    g_LiLj: float = 1.0
     m_ZLiLj: float = 1000.0
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
@@ -532,6 +626,15 @@ class LiLjPortal(DarkSectorModel):
             return {ch: 0.0 for ch in partials}
         return {ch: w / total for ch, w in partials.items()}
 
+    def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
+        """
+        SI DM-nucleon cross section for L_i - L_j portal.
+
+        Quarks are uncharged under L_i - L_j, so the tree-level
+        DM-nucleon cross section is zero.
+        """
+        return 0.0
+
 
 # =====================================================================
 #  BaryonPortal
@@ -567,7 +670,7 @@ class BaryonPortal(DarkSectorModel):
     gX: int   = 2
     gY: int   = 3
     alphaX: float = 1e-2
-    g_B: float = 0.1
+    g_B: float = 1.0
     m_ZB: float = 1000.0
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
@@ -650,6 +753,22 @@ class BaryonPortal(DarkSectorModel):
         if total <= 0:
             return {ch: 0.0 for ch in partials}
         return {ch: w / total for ch, w in partials.items()}
+
+    def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
+        """
+        SI DM-nucleon cross section for the Baryon portal.
+
+        Purely vectorial, isospin-universal: all quarks have B = 1/3,
+        so proton and neutron couplings are equal and the result is
+        independent of (A_N, Z_N).
+        """
+        gD = np.sqrt(4.0 * np.pi * self.alphaX)
+        mixing = abs((self.m_ZB**2 + self.mY**2)
+                     / (self.m_ZB**2 - self.mY**2))
+        gqV = epsX * self.g_B * (1.0 / 3.0) * mixing
+        mu = self.mX * mN / (self.mX + mN)
+        amplitude = gD * 3.0 * gqV / self.mY**2
+        return mu**2 / np.pi * amplitude**2 * HBARC2
 
 
 # =====================================================================
@@ -802,3 +921,27 @@ class HiggsPortal(DarkSectorModel):
         br.pop('total', None)
         br.pop('total_sp', None)
         return br
+
+    def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe,
+                 f_N: float = 0.30) -> float:
+        """
+        SI DM-nucleon cross section for the Higgs portal.
+
+        Majorana fermion chi scattering via t-channel exchange of two
+        mixed scalars (h, S) in the small-mixing limit (sin(theta) = epsX).
+        From arXiv:1609.02555, Sec. VI.B.
+
+        Parameters
+        ----------
+        epsX : float
+            Higgs-singlet mixing angle (sin(theta)).
+        A_N, Z_N : int
+            Target nucleus (unused — isospin-universal via Higgs coupling).
+        f_N : float
+            Higgs-nucleon form factor (default 0.30).
+        """
+        mu = self.mX * mN / (self.mX + mN)
+        propagator = 1.0 / self.mY**2 - 1.0 / Mh**2
+        a_N = self.lam_s * epsX * f_N * mN / vH * propagator
+
+        return 4.0 * mu**2 / np.pi * a_N**2 * HBARC2

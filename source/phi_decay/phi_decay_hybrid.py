@@ -42,8 +42,7 @@ import numpy as np
 # ---------------------------------------------------------------------------
 #  Physical constants
 # ---------------------------------------------------------------------------
-_V_EW  = 246.0        # Higgs VEV [GeV]
-_M_H   = 125.10       # SM Higgs mass [GeV]
+from ..constants import vH as _V_EW, Mh as _M_H
 _HBAR  = 6.582119514e-25  # hbar [GeV s]
 
 # Regime boundaries

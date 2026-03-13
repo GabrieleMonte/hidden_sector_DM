@@ -1886,79 +1886,136 @@ class BoltzmannSolver:
         return 10**log10eps
 
     # =============================================================
-    #  Epsilon finder — BBN constraint via DN_eff
+    #  Epsilon finder — BBN hadronic injection constraint
     # =============================================================
-    def find_epsilon_BBN_Neff(
+    def find_epsilon_BBN_hadronic(
         self,
-        bg_ICs,
-        T_eval=1e-3,
-        DNeff_max=0.151,
-        log10eps_range=(-13, -9),
-        root_rtol=1e-3,
-        bg_kw=None,
-        verbose=False,
-    ):
-        cosmo = self.cosmo
+        YY_frozen: float,
+        log10eps_range: tuple = (-20, -6),
+        root_rtol: float = 1e-3,
+        verbose: bool = False,
+    ) -> float:
+        """
+        Find the minimum portal coupling eps such that hadronic
+        injection from Y decay satisfies the Kawasaki et al. (2017)
+        BBN constraint.
+
+        The constraint is on  m_Y * Y_Y  as a function of the Y
+        lifetime  tau = hbar / Gamma(Y -> SM).  The bound depends
+        on the hadronic branching fractions of Y (uu vs bb channels).
+
+        Parameters
+        ----------
+        YY_frozen : float
+            Frozen-out comoving yield Y_Y = n_Y / s at temperatures
+            well above BBN (after cannibal freeze-out but before
+            Y decay).
+        log10eps_range : tuple
+            Bracket for log10(epsX) root search.
+        root_rtol : float
+            Relative tolerance for brentq.
+        verbose : bool
+            Print diagnostic info at each evaluation.
+
+        Returns
+        -------
+        eps_BBN : float
+            Minimum portal coupling satisfying the BBN constraint.
+        """
+        from .bbn import mY_bound_model
+
         model = self.model
-        mX, mY = model.mX, model.mY
+        mY = model.mY
+        branching_ratios = model.branching_ratios_to_SM()
+        hbar_GeV_s = 6.582119514e-25   # hbar in GeV*s
 
-        T0  = bg_ICs['T'][-1]
-        TD0 = bg_ICs['TD'][-1]
-        YX0 = bg_ICs['YX'][-1]
-        YY0 = bg_ICs['YY'][-1]
-        s0  = cosmo.s_entropy(T0)
-        rhoX0 = mX * YX0 * s0
-        rhoY0 = cosmo.Bfac1(mY / TD0, mY) * YY0 * s0
-        sv    = model.sigmav_XX_to_YY_swave()
-
-        rho_1nu = 7.0 * np.pi**2 / 120.0 * T_eval**4
-
-        def _rhoY_at_Teval(epsX):
-            GammaY = model.decay_width_to_SM(epsX)
-
-            def rho_r(T):
-                return np.pi**2 / 30.0 * cosmo.gstar(T) * T**4
-
-            def ode(N, y):
-                T    = T0 * np.exp(np.clip(y[0], -50, 50))
-                rhoY = rhoY0 * np.exp(np.clip(y[1], -700, 200))
-                rhoX = rhoX0 * np.exp(np.clip(y[2], -700, 200))
-                T    = max(T, 1e-30)
-                rhoY = max(rhoY, 1e-300)
-                rhoX = max(rhoX, 1e-300)
-                rhor = rho_r(T)
-                H = np.sqrt((rhor + rhoX + rhoY) / (3.0 * Mpl**2))
-                s = cosmo.s_entropy(T)
-                g_tilde = 1.0 + cosmo.dlngSdlnT(T) / 3.0
-                inj = rhoY * GammaY / (max(H, 1e-300) * 3.0 * s * T)
-                return [
-                    -1.0 / g_tilde * (1.0 - inj),
-                    -(3.0 + GammaY / max(H, 1e-300)),
-                    -3.0 - sv * rhoX / (2.0 * mX * max(H, 1e-300)),
-                ]
-
-            def T_hit(N, y):
-                return T0 * np.exp(np.clip(y[0], -50, 50)) - T_eval
-            T_hit.terminal  = True
-            T_hit.direction = -1
-
-            sol = solve_ivp(
-                ode, (0, 80), [0.0, 0.0, 0.0],
-                method='Radau', max_step=0.5,
-                rtol=1e-6, atol=1e-18,
-                events=[T_hit],
-            )
-            return rhoY0 * np.exp(sol.y[1, -1])
+        mY_times_YY = mY * YY_frozen
 
         def f(log10eps):
-            rhoY_e = _rhoY_at_Teval(10**log10eps)
-            DNeff  = rhoY_e / rho_1nu
-            if verbose:
-                print(f"  log10eps={log10eps:+.3f}  DNeff={DNeff:.4e}")
-            return DNeff - DNeff_max
+            epsX = 10.0 ** log10eps
+            Gamma = model.decay_width_to_SM(epsX)
+            if Gamma <= 0:
+                return -1.0   # no decay -> certainly excluded
+            tau = hbar_GeV_s / Gamma
+            bound = mY_bound_model(mY, tau, branching_ratios)
 
-        log10eps = brentq(f, log10eps_range[0], log10eps_range[1], rtol=root_rtol)
-        return 10**log10eps
+            if verbose:
+                print(f"  log10eps={log10eps:+.3f}  tau={tau:.3e} s  "
+                      f"mY*YY={mY_times_YY:.3e}  bound={bound:.3e}")
+
+            # f > 0 means allowed (bound > mY*YY)
+            # f < 0 means excluded
+            return bound - mY_times_YY
+
+        log10eps = brentq(
+            f, log10eps_range[0], log10eps_range[1], rtol=root_rtol,
+        )
+        return 10.0 ** log10eps
+
+    # =============================================================
+    #  Epsilon finder — direct-detection constraint
+    # =============================================================
+    def find_epsilon_DD(
+        self,
+        constraint: str = 'LZ',
+        log10eps_range: tuple = (-20, -1),
+        root_rtol: float = 1e-6,
+    ) -> float:
+        """
+        Find the portal coupling eps that saturates a direct-detection
+        constraint on the SI DM-nucleon cross section.
+
+        Parameters
+        ----------
+        constraint : str or callable
+            'LZ'          — LZ 90% CL upper limit (9–10000 GeV).
+            'nufloor_Xe'  — Xenon SI neutrino floor (0.1–10000 GeV).
+            callable      — custom function sigma_limit(mX) -> cm^2.
+        log10eps_range : tuple
+            Bracket for log10(eps) root search.
+        root_rtol : float
+            Relative tolerance for brentq.
+
+        Returns
+        -------
+        eps : float
+            Portal coupling that gives sigma_SI(eps) = sigma_limit(mX).
+            Returns np.inf if the model has no SI cross section
+            (e.g. LiLjPortal).
+        """
+        # --- Resolve the limit function ---
+        if callable(constraint):
+            sigma_limit_fn = constraint
+        elif constraint == 'LZ':
+            from .direct_detection import sigma_SI_LZ
+            sigma_limit_fn = sigma_SI_LZ
+        elif constraint == 'nufloor_Xe':
+            from .direct_detection import sigma_SI_nufloor_Xe
+            sigma_limit_fn = sigma_SI_nufloor_Xe
+        else:
+            raise ValueError(
+                f"Unknown constraint '{constraint}'. "
+                "Use 'LZ', 'nufloor_Xe', or a callable.")
+
+        mX = self.model.mX
+        try:
+            sigma_target = sigma_limit_fn(mX)
+        except ValueError:
+            return np.nan
+
+        # Check if the model has a nonzero SI cross section
+        eps_test = 10.0 ** (0.5 * (log10eps_range[0] + log10eps_range[1]))
+        if self.model.sigma_SI(eps_test) == 0.0:
+            return np.inf
+
+        def f(log10eps):
+            eps = 10.0 ** log10eps
+            return np.log10(self.model.sigma_SI(eps)) - np.log10(sigma_target)
+
+        log10eps = brentq(
+            f, log10eps_range[0], log10eps_range[1], rtol=root_rtol,
+        )
+        return 10.0 ** log10eps
 
 
 # =================================================================
