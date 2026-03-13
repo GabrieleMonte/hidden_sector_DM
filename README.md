@@ -11,13 +11,13 @@ The code solves the coupled Boltzmann equations for the dark matter yield and da
 
 Five portal scenarios are implemented:
 
-| Model | Mediator | Portal coupling | Reference |
-|-------|----------|----------------|-----------|
-| `VectorPortal` | Dark photon (spin-1) | Kinetic mixing with hypercharge | -- |
-| `BLPortal` | Dark photon (spin-1) | Kinetic mixing with U(1)_{B-L} | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
-| `LiLjPortal` | Dark photon (spin-1) | Kinetic mixing with U(1)_{L_i - L_j} | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
-| `BaryonPortal` | Dark photon (spin-1) | Kinetic mixing with U(1)_B | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
-| `HiggsPortal` | Dark scalar (spin-0) | Scalar mixing with SM Higgs | -- |
+| Model | DM | Mediator | Portal coupling | Reference |
+|-------|-----|----------|----------------|-----------|
+| `VectorPortal` | Dirac fermion | Dark photon (spin-1) | Kinetic mixing with hypercharge | [arXiv:1602.08490](https://arxiv.org/abs/1602.08490) |
+| `BLPortal` | Dirac fermion | Dark photon (spin-1) | Kinetic mixing with U(1)_{B-L} | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
+| `LiLjPortal` | Dirac fermion | Dark photon (spin-1) | Kinetic mixing with U(1)_{L_i - L_j} | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
+| `BaryonPortal` | Dirac fermion | Dark photon (spin-1) | Kinetic mixing with U(1)_B | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
+| `HiggsPortal` | Majorana fermion | Dark scalar (spin-0) | Scalar mixing with SM Higgs | [arXiv:1609.02555](https://arxiv.org/abs/1609.02555) |
 
 All models implement a common `DarkSectorModel` interface providing:
 - 2->2 annihilation cross sections (XX -> YY)
