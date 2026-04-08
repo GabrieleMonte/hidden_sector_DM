@@ -35,7 +35,7 @@ for alphaX, r in cases:
             mX=mXs[i], mY=mYs[i], gX=2, gY=3, alphaX=alphaX,
             include_antiparticlesX=True, include_antiparticlesY=False)
         solver = BoltzmannSolver(cosmo, model)
-        sol0 = solver.solve_boltzmann_chempot_QSSA(
+        sol0 = solver.solve_boltzmann_chempot_3phase(
             return_bg_ICs=True, verbose=False,
             cannibal_switch_full=1, convergence_threshold=2e-2)
         epsXs[i] = solver.find_epsilon_DMRelic(

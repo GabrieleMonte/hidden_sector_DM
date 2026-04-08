@@ -506,7 +506,7 @@ class VectorPortal:
     Delta1: float = 0.5
     Delta2: float = 0.5
     Delta3: float = 0.5
-    xi_infl: float = 1
+    xi_ini: float = 1
     # ----------------------------------------------------------
     #  Z'-fermion couplings
     # ----------------------------------------------------------
@@ -590,7 +590,7 @@ class VectorPortal:
     # ----------------------------------------------------------
     #  Boltzmann solver -- chemical-potential formulation
     # ----------------------------------------------------------
-    def solve_boltzmann_chempot(
+    def solve_boltzmann_chempot_2phase(
         self,
         xmin: float = 1e-3,
         n_points: int = 500,
@@ -687,9 +687,9 @@ class VectorPortal:
                 Den = np.copysign(1e-300, Den)
 
             dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
-            Gamma_ann = (th['s'] * th['g_tilde'] / (th['Htot'] * x)
+            Gamma_over_H_ann = (th['s'] * th['g_tilde'] / (th['Htot'] * x)
                          * (th['sv_XXYY'] / 2.0) * th['YX'])
-            return dlnxi, Gamma_ann
+            return dlnxi, Gamma_over_H_ann
 
         def BEQs_eq(t, y):
             dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
@@ -715,7 +715,7 @@ class VectorPortal:
             S_3to2 = (YY**2 * th['sv_YYY_YY']
                       + YY * YX * sv_YYX_YX
                       + YX**2 * sv_YXX_XX)
-            Gamma_can = th['s']**2 * g_tilde / (th['Htot'] * x) * S_3to2
+            Gamma_over_H_can = th['s']**2 * g_tilde / (th['Htot'] * x) * S_3to2
 
             if muY > 50:
                 one_m_expnmuY = 1.0
@@ -724,7 +724,7 @@ class VectorPortal:
             else:
                 one_m_expnmuY = 1.0 - np.exp(-muY)
 
-            C = coll_Y_2to2 - Gamma_can * one_m_expnmuY + (th['lamY'] - 3.0 * g_tilde) / x
+            C = coll_Y_2to2 - Gamma_over_H_can * one_m_expnmuY + (th['lamY'] - 3.0 * g_tilde) / x
             D = -th['lamY']
 
             D_cal  = nX * th['dBX1'] + nY * th['dBY1']
@@ -758,7 +758,7 @@ class VectorPortal:
 
         x0    = xmin
         lnxi0 = (1.0 / 3.0) * np.log(
-            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4))+ np.log(self.xi_infl)
+            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4))+ np.log(self.xi_ini)
         lnYX_check_prev = cosmo.ln_Yeq(
             mX / (mX / x0), gX, mX, include_antiparticlesX, cosmo.s_entropy(mX / x0))
         x_check_prev = x0
@@ -775,7 +775,7 @@ class VectorPortal:
             print("=" * 60)
             print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
             print(f"  alphaX = {alphaX}")
-            print(f"  Phase 1->2 switch: Gamma_ann < {Gamma_switch_threshold:.0e}")
+            print(f"  Phase 1->2 switch: Gamma_over_H_ann < {Gamma_switch_threshold:.0e}")
             print(f"  Convergence mode: {convergence_mode}")
             print(f"  Convergence threshold: {convergence_threshold}")
             print("-" * 60)
@@ -816,7 +816,7 @@ class VectorPortal:
                     y0_full = [y0_eq[0], 0.0, 0.0]
                     if verbose:
                         print(f"\n  -> Full system at x = {x0:.2f}"
-                              f" (Gamma_ann = {Gamma_now:.1e})")
+                              f" (Gamma_over_H_ann = {Gamma_now:.1e})")
 
             else:
                 sol = solve_ivp(BEQs_full, (x0, xf), y0_full, t_eval=xs,
@@ -942,7 +942,7 @@ class VectorPortal:
     # ----------------------------------------------------------
     #  Boltzmann solver -- QSSA three-phase
     # ----------------------------------------------------------
-    def solve_boltzmann_chempot_QSSA(
+    def solve_boltzmann_chempot_3phase(
         self,
         xmin: float = 1e-3,
         n_points: int = 500,
@@ -964,8 +964,8 @@ class VectorPortal:
         Phase 1.5 : QSSA / Y-in-eq (muY=0, evolve ln xi & muX)
         Phase 2   : full system (evolve ln xi, muX, muY)
 
-        Phase 1->1.5 switches when Gamma_ann < Gamma_switch_QSSA.
-        Phase 1.5->2 switches when BOTH Gamma_ann < Gamma_switch_full
+        Phase 1->1.5 switches when Gamma_over_H_ann < Gamma_switch_QSSA.
+        Phase 1.5->2 switches when BOTH Gamma_over_H_ann < Gamma_switch_full
                      AND cannibal rate < cannibal_switch_full.
         If cannibals stay efficient, QSSA carries all the way to convergence.
         """
@@ -1077,9 +1077,9 @@ class VectorPortal:
             if np.abs(Den) < 1e-300:
                 Den = np.copysign(1e-300, Den)
             dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
-            Gamma_ann = (th['s'] * th['g_tilde'] / (th['Htot'] * x)
+            Gamma_over_H_ann = (th['s'] * th['g_tilde'] / (th['Htot'] * x)
                          * (th['sv_XXYY'] / 2.0) * th['YX'])
-            return dlnxi, Gamma_ann
+            return dlnxi, Gamma_over_H_ann
 
         def BEQs_eq(t, y):
             dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
@@ -1152,7 +1152,7 @@ class VectorPortal:
             S_3to2 = (YY**2 * th['sv_YYY_YY']
                       + YY * YX * sv_YYX_YX
                       + YX**2 * sv_YXX_XX)
-            Gamma_can = th['s']**2 * g_tilde / (th['Htot'] * x) * S_3to2
+            Gamma_over_H_can = th['s']**2 * g_tilde / (th['Htot'] * x) * S_3to2
 
             if muY > 50:
                 one_m = 1.0
@@ -1161,7 +1161,7 @@ class VectorPortal:
             else:
                 one_m = 1.0 - np.exp(-muY)
 
-            C = coll_Y_2to2 - Gamma_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
+            C = coll_Y_2to2 - Gamma_over_H_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
             D = -th['lamY']
 
             D_cal  = nX * th['dBX1'] + nY * th['dBY1']
@@ -1247,7 +1247,7 @@ class VectorPortal:
 
         x0    = xmin
         lnxi0 = (1.0 / 3.0) * np.log(
-            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4))+ np.log(self.xi_infl)
+            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4))+ np.log(self.xi_ini)
         lnYX_check_prev = cosmo.ln_Yeq(
             mX / (mX / x0), gX, mX, include_antiparticlesX,
             cosmo.s_entropy(mX / x0))
@@ -1267,9 +1267,9 @@ class VectorPortal:
             print("=" * 60)
             print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
             print(f"  alphaX = {alphaX}")
-            print(f"  Phase 1->1.5: Gamma_ann < {Gamma_switch_QSSA:.0e}")
-            print(f"  Phase 1.5->2: Gamma_ann < {Gamma_switch_full:.0e}"
-                  f" AND Gamma_can < {cannibal_switch_full:.0e}")
+            print(f"  Phase 1->1.5: Gamma_over_H_ann < {Gamma_switch_QSSA:.0e}")
+            print(f"  Phase 1.5->2: Gamma_over_H_ann < {Gamma_switch_full:.0e}"
+                  f" AND Gamma_over_H_can < {cannibal_switch_full:.0e}")
             print(f"  Convergence: {convergence_mode}, thr={convergence_threshold}")
             print("-" * 60)
 
@@ -1309,7 +1309,7 @@ class VectorPortal:
                     y0_QSSA = [y0_eq[0], 0.0]
                     if verbose:
                         print(f"\n  -> Phase 1.5 (QSSA) at x = {x0:.2f}"
-                              f" (Gamma_ann = {Gamma_now:.1e})")
+                              f" (Gamma_over_H_ann = {Gamma_now:.1e})")
 
             # ----- PHASE 1.5 -----
             elif phase == 1.5:
@@ -1329,19 +1329,19 @@ class VectorPortal:
                 # Check Phase 2 trigger: BOTH ann rate AND cannibal rate must be low
                 th_chk = _thermo_Yeq(x0, y0_QSSA[0], y0_QSSA[1])
                 sv_chk = self.sigmav_XX_to_YY_full(mX, mY, alphaX, th_chk['TD'])
-                Gamma_ann_now = (th_chk['s'] * th_chk['g_tilde']
+                Gamma_over_H_ann_now = (th_chk['s'] * th_chk['g_tilde']
                                  / (th_chk['Htot'] * x0)
                                  * (sv_chk / 2.0) * th_chk['YX'])
-                Gamma_can_now = estimate_cannibal_rate(x0, y0_QSSA[0], y0_QSSA[1])
+                Gamma_over_H_can_now = estimate_cannibal_rate(x0, y0_QSSA[0], y0_QSSA[1])
 
-                if (Gamma_ann_now < Gamma_switch_full or Gamma_can_now < cannibal_switch_full):
+                if (Gamma_over_H_ann_now < Gamma_switch_full or Gamma_over_H_can_now < cannibal_switch_full):
                     phase = 2
                     state["x_switch_full"] = x0
                     y0_full = [y0_QSSA[0], y0_QSSA[1], 0.0]
                     if verbose:
                         print(f"\n  -> Phase 2 (full) at x = {x0:.2f}"
-                              f" (Gamma_ann={Gamma_ann_now:.1e},"
-                              f" Gamma_can={Gamma_can_now:.1e},"
+                              f" (Gamma_over_H_ann={Gamma_over_H_ann_now:.1e},"
+                              f" Gamma_over_H_can={Gamma_over_H_can_now:.1e},"
                               f" muX={y0_QSSA[1]:.2f})")
 
                 # Convergence check in QSSA phase
@@ -1478,8 +1478,8 @@ class VectorPortal:
         Phase 1.5 : Y-variables (ln xi, YX, YY) — no stiffness from cannibals
         Phase 2   : mu-variables (ln xi, muX, muY) — handles post-freeze-out
 
-        Phase 1 → 1.5: Gamma_ann < Gamma_switch_Yield
-        Phase 1.5 → 2: Gamma_can < cannibal_switch_mu  OR
+        Phase 1 → 1.5: Gamma_over_H_ann < Gamma_switch_Yield
+        Phase 1.5 → 2: Gamma_over_H_can < cannibal_switch_mu  OR
                         |YX - YXeq|/YXeq > delta_switch_mu
                         (whichever fires first)
         """
@@ -1560,9 +1560,9 @@ class VectorPortal:
             if np.abs(Den) < 1e-300:
                 Den = np.copysign(1e-300, Den)
             dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
-            Gamma_ann = (th['s'] * th['g_tilde'] / (Htot * x)
+            Gamma_over_H_ann = (th['s'] * th['g_tilde'] / (Htot * x)
                          * (th['sv_XXYY'] / 2.0) * th['YeqX'])
-            return dlnxi, Gamma_ann
+            return dlnxi, Gamma_over_H_ann
 
         def BEQs_eq(t, y):
             dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
@@ -1623,11 +1623,11 @@ class VectorPortal:
             dlnxi_dx = np.clip(dlnxi_dx, -10.0 / x, 10.0 / x)
 
             # --- diagnostics for switching ---
-            Gamma_can = PreFac2 * s * S_3to2  # ~ s^2 g_tilde / (Htot x) * S_3to2 * s... no
-            # Actually: Gamma_can = s^2 * g_tilde / (Htot * x) * S_3to2
-            Gamma_can = PreFac2 * S_3to2
+            Gamma_over_H_can = PreFac2 * s * S_3to2  # ~ s^2 g_tilde / (Htot x) * S_3to2 * s... no
+            # Actually: Gamma_over_H_can = s^2 * g_tilde / (Htot * x) * S_3to2
+            Gamma_over_H_can = PreFac2 * S_3to2
 
-            return dlnxi_dx, dYX_dx, dYY_dx, delta_X, Gamma_can
+            return dlnxi_dx, dYX_dx, dYY_dx, delta_X, Gamma_over_H_can
 
         def BEQs_Yield(t, y):
             dlnxi, dYX, dYY, _, _ = compute_derivatives_Yield(t, y[0], y[1], y[2])
@@ -1658,7 +1658,7 @@ class VectorPortal:
             S_3to2 = (YY**2 * th['sv_YYY']
                       + YY * YX * sv_YYX_YX
                       + YX**2 * sv_YXX_XX)
-            Gamma_can = s**2 * g_tilde / (Htot * x) * S_3to2
+            Gamma_over_H_can = s**2 * g_tilde / (Htot * x) * S_3to2
 
             if muY > 50:
                 one_m = 1.0
@@ -1667,7 +1667,7 @@ class VectorPortal:
             else:
                 one_m = 1.0 - np.exp(-muY)
 
-            C = coll_Y_2to2 - Gamma_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
+            C = coll_Y_2to2 - Gamma_over_H_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
             D = -th['lamY']
 
             D_cal  = nX * th['dBX1'] + nY * th['dBY1']
@@ -1701,7 +1701,7 @@ class VectorPortal:
 
         x0    = xmin
         lnxi0 = (1.0 / 3.0) * np.log(
-            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4))+ np.log(self.xi_infl)
+            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4))+ np.log(self.xi_ini)
 
         T0 = mX / x0;  s0 = cosmo.s_entropy(T0)
         YX0 = cosmo.neq_MB(mX / T0, gX, mX, include_antiparticlesX) / s0
@@ -1725,8 +1725,8 @@ class VectorPortal:
             print("=" * 60)
             print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
             print(f"  alphaX = {alphaX}")
-            print(f"  Phase 1→1.5 (Yield): Gamma_ann < {Gamma_switch_Yield:.0e}")
-            print(f"  Phase 1.5→2 (mu): Gamma_can < {cannibal_switch_mu:.0e}"
+            print(f"  Phase 1→1.5 (Yield): Gamma_over_H_ann < {Gamma_switch_Yield:.0e}")
+            print(f"  Phase 1.5→2 (mu): Gamma_over_H_can < {cannibal_switch_mu:.0e}"
                   f" OR delta > {delta_switch_mu}")
             print(f"  Convergence: {convergence_mode}, thr={convergence_threshold}")
             print("-" * 60)
@@ -1775,7 +1775,7 @@ class VectorPortal:
                     y0_Yield = [y0_eq[0], th_sw['YeqX'], th_sw['YeqY']]
                     if verbose:
                         print(f"\n  → Phase 1.5 (Yield) at x = {x0:.2f}"
-                              f" (Gamma_ann = {Gamma_now:.1e})")
+                              f" (Gamma_over_H_ann = {Gamma_now:.1e})")
 
             # ----- PHASE 1.5: Y-variables -----
             elif phase == 1.5:
@@ -1796,19 +1796,19 @@ class VectorPortal:
                 x0 = sol.t[-1];  y0_Yield = sol.y[:, -1].tolist()
 
                 # Check switching condition
-                _, _, _, delta_now, Gamma_can_now = compute_derivatives_Yield(
+                _, _, _, delta_now, Gamma_over_H_can_now = compute_derivatives_Yield(
                     x0, y0_Yield[0], y0_Yield[1], y0_Yield[2])
 
                 if verbose:
                     iterator.set_postfix({
                         'ph': '1.5', 'x': f'{x0:.1f}',
-                        'δ': f'{delta_now:.1e}', 'Γ_c': f'{Gamma_can_now:.1e}'})
+                        'δ': f'{delta_now:.1e}', 'Γ_c': f'{Gamma_over_H_can_now:.1e}'})
 
-                if Gamma_can_now < cannibal_switch_mu  or delta_now > delta_switch_mu:
+                if Gamma_over_H_can_now < cannibal_switch_mu  or delta_now > delta_switch_mu:
                     phase = 2
                     state["x_switch_mu"] = x0
-                    reason = (f"Gamma_can={Gamma_can_now:.1e}"
-                              if Gamma_can_now < cannibal_switch_mu
+                    reason = (f"Gamma_over_H_can={Gamma_over_H_can_now:.1e}"
+                              if Gamma_over_H_can_now < cannibal_switch_mu
                               else f"delta={delta_now:.1e}")
                     state["switch_reason"] = reason
 
@@ -2051,9 +2051,9 @@ class VectorPortal:
                 Den = np.copysign(1e-300, Den)
 
             dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
-            Gamma_ann = (th['s'] * th['g_tilde'] / (th['Htot'] * x)
+            Gamma_over_H_ann = (th['s'] * th['g_tilde'] / (th['Htot'] * x)
                          * sv_XXYY * th['YX'])
-            return dlnxi, Gamma_ann
+            return dlnxi, Gamma_over_H_ann
 
         def BEQs_eq(t, y):
             dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
@@ -2102,7 +2102,7 @@ class VectorPortal:
 
         x0    = xmin
         lnxi0 = (1.0 / 3.0) * np.log(
-            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4))+ np.log(self.xi_infl)
+            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4))+ np.log(self.xi_ini)
         lnYX_check_prev = cosmo.ln_Yeq(
             mX / (mX / x0), gX, mX, include_antiparticlesX,
             cosmo.s_entropy(mX / x0))
@@ -2119,7 +2119,7 @@ class VectorPortal:
             print("=" * 60)
             print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
             print(f"  alphaX = {alphaX}")
-            print(f"  Phase 1->2 switch: Gamma_ann < {Gamma_switch_threshold:.0e}")
+            print(f"  Phase 1->2 switch: Gamma_over_H_ann < {Gamma_switch_threshold:.0e}")
             print(f"  Convergence: |d ln YX / d ln x| < {convergence_threshold}")
             print("-" * 60)
 
@@ -2158,7 +2158,7 @@ class VectorPortal:
                     y0_full = [y0_eq[0], 0.0]
                     if verbose:
                         print(f"\n  -> Full system at x = {x0:.2f}"
-                              f" (Gamma_ann = {Gamma_now:.1e})")
+                              f" (Gamma_over_H_ann = {Gamma_now:.1e})")
 
             else:
                 sol = solve_ivp(BEQs_full, (x0, xf), y0_full, t_eval=xs,
@@ -2591,7 +2591,7 @@ def find_mXstar(
     Delta1: float = 0.5,
     Delta2: float = 0.5,
     Delta3: float = 0.5,
-    xi_infl: float = 1.0,
+    xi_ini: float = 1.0,
     # --- Boltzmann solver ---
     convergence_threshold: float = 1e-2,
     convergence_mode: str = "dlnYX",
@@ -2633,7 +2633,7 @@ def find_mXstar(
         include_antiparticlesX=include_antiparticlesX,
         include_antiparticlesY=include_antiparticlesY,
         Delta1=Delta1, Delta2=Delta2, Delta3=Delta3,
-        xi_infl=xi_infl)
+        xi_ini=xi_ini)
 
     if use_hybrid_solver:
         skw = dict(
@@ -2664,7 +2664,7 @@ def find_mXstar(
         if use_hybrid_solver:
             sol = vp.solve_boltzmann_hybrid(**skw)
         else:
-            sol = vp.solve_boltzmann_chempot_QSSA(**skw)
+            sol = vp.solve_boltzmann_chempot_3phase(**skw)
         sol_bg = vp.solve_background(
             epsX=epsX_ref, bg_ICs=sol['bg_ICs'], **_bg_kw)
         return np.log10(sol_bg['YX_final'] * mX)
@@ -2728,7 +2728,7 @@ def find_mXstar(
         if use_hybrid_solver:
             sol_star= vp_star.solve_boltzmann_hybrid(**skw)
         else:
-            sol_star = vp_star.solve_boltzmann_chempot_QSSA(**skw)
+            sol_star = vp_star.solve_boltzmann_chempot_3phase(**skw)
         S_plateau = vp_star.solve_background(
             epsX=epsX_ref, bg_ICs=sol_star['bg_ICs'], **_bg_kw)['SRatio']
 

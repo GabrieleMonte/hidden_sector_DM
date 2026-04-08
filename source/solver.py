@@ -34,9 +34,605 @@ class BoltzmannSolver:
         self.model = model
 
     # =============================================================
-    #  Boltzmann solver — chemical-potential formulation (2-phase)
+    #  Boltzmann solver — chemical-potential formulation (3-phase)
     # =============================================================
-    def solve_boltzmann_chempot(
+    def solve_boltzmann_chempot_3phase(
+        self,
+        xmin: float = 1e-3,
+        xmax: float = None,
+        n_points: int = 500,
+        rtol_value: float = 1e-8,
+        atol_value: float = 1e-15,
+        Gamma_switch_QSSA: float = 5e9,
+        Gamma_switch_full: float = 1e4,
+        cannibal_switch_full: float = 1,
+        convergence_threshold: float = 1e-2,
+        convergence_mode: str = "dlnxi_NR",
+        Tinf: float = 1e14,
+        return_bg_ICs: bool = False,
+        verbose: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Three-phase QSSA Boltzmann solver using chemical-potential variables.
+
+        Phase 1   : equilibrium (muX=muY=0, evolve ln xi only)
+        Phase 1.5 : QSSA / Y-in-eq (muY=0, evolve ln xi & muX)
+        Phase 2   : full system (evolve ln xi, muX, muY)
+        """
+        cosmo = self.cosmo
+        model = self.model
+        mX, mY = model.mX, model.mY
+        gX, gY = model.gX, model.gY
+        include_antiparticlesX = model.include_antiparticlesX
+        include_antiparticlesY = model.include_antiparticlesY
+
+        # Symmetry factor: 1/2 for Dirac (X != Xbar), 1 for Majorana (X = Xbar)
+        ann_sym = 0.5 if include_antiparticlesX else 1.0
+
+        r = mX / mY
+        xmax_recommended = r**2 * 1e4
+        if xmax is None:
+            xmax = max(1e5, xmax_recommended)
+        elif xmax < xmax_recommended:
+            import warnings
+            warnings.warn(
+                f"xmax={xmax:.0e} may be too small for r={r:.1f}; "
+                f"recommend xmax >= r^2 * 1e4 = {xmax_recommended:.0e}")
+
+        # Build x-grid up to xmax
+        xf_tail = [x for x in [2e2, 5e2, 1e3, 2e3, 5e3, 1e4] if x < xmax]
+        if xmax > 1e4:
+            xf_tail.extend(np.logspace(np.log10(max(1e4, xf_tail[-1] if xf_tail else 1e4) * 2),
+                                        np.log10(xmax), 10).tolist())
+        xf_tail.append(xmax)
+        xfList = np.concatenate([
+            np.array([1e-2, 1e-1, 0.99]),
+            np.linspace(1, 10, 20),
+            np.arange(10.5, 100, 1),
+            np.array(xf_tail),
+        ])
+        xfList = np.unique(xfList)
+
+        sv_YXX_XX = model.sigmav2_YXX_to_XX() * ann_sym   # 1/2 for Dirac (XX in initial state)
+        sv_YYX_YX = model.sigmav2_YYX_to_YX()
+
+        state = {"x_FO": None, "x_switch_QSSA": None,
+                 "x_switch_full": None, "x_converged": None}
+
+        # --- Thermodynamics: full (Phase 1 & 2) ---
+
+        def _thermo_full(x, lnxi, muX, muY):
+            xi = np.exp(np.clip(lnxi, -20, 20))
+            T  = mX / x;  TD = xi * T
+            s  = cosmo.s_entropy(T);  H = cosmo.hubble(T)
+            dlngSdlnT_val = cosmo.dlngSdlnT(T)
+            g_tilde = 1.0 + dlngSdlnT_val / 3.0
+            zX = mX / TD;  zY = mY / TD
+
+            BX1 = cosmo.Bfac1(zX, mX);  BX2 = cosmo.Bfac2(zX, mX)
+            dBX1 = cosmo.dBfac1dT(zX, mX)
+            BY1 = cosmo.Bfac1(zY, mY);  BY2 = cosmo.Bfac2(zY, mY)
+            dBY1 = cosmo.dBfac1dT(zY, mY)
+            lamX = cosmo.lambda_i(zX);  lamY = cosmo.lambda_i(zY)
+
+            lnYeqX = cosmo.ln_Yeq(zX, gX, mX, include_antiparticlesX, s)
+            lnYeqY = cosmo.ln_Yeq(zY, gY, mY, include_antiparticlesY, s)
+            lnYX = lnYeqX + muX;  lnYY = lnYeqY + muY
+            YX = np.exp(np.clip(lnYX, -700, 700))
+            YY = np.exp(np.clip(lnYY, -700, 700))
+            nX = YX * s;  nY = YY * s
+
+            rho_h = max(BX1 * nX + BY1 * nY, 0.0)
+            Htot  = np.sqrt(H**2 + rho_h / (3.0 * Mpl**2))
+
+            return dict(
+                xi=xi, T=T, TD=TD, s=s, H=H, Htot=Htot,
+                dlngSdlnT=dlngSdlnT_val, g_tilde=g_tilde, zX=zX, zY=zY,
+                BX1=BX1, BX2=BX2, dBX1=dBX1,
+                BY1=BY1, BY2=BY2, dBY1=dBY1,
+                lnYeqX=lnYeqX, lnYeqY=lnYeqY, lnRXY=lnYeqX - lnYeqY,
+                YX=YX, YY=YY, lnYX=lnYX, lnYY=lnYY, nX=nX, nY=nY,
+                lamX=lamX, lamY=lamY,
+                sv_YYY_YY=model.sigmav2_YYY_to_YY(TD),
+                sv_XXYY=model.sigmav_XX_to_YY(TD),
+            )
+
+        # --- Thermodynamics: Y-in-eq (Phase 1.5) ---
+
+        def _thermo_Yeq(x, lnxi, muX):
+            xi = np.exp(np.clip(lnxi, -20, 20))
+            T  = mX / x;  TD = xi * T
+            s  = cosmo.s_entropy(T);  H = cosmo.hubble(T)
+            dlngSdlnT_val = cosmo.dlngSdlnT(T)
+            g_tilde = 1.0 + dlngSdlnT_val / 3.0
+            zX = mX / TD;  zY = mY / TD
+
+            BX1 = cosmo.Bfac1(zX, mX);  BX2 = cosmo.Bfac2(zX, mX)
+            dBX1 = cosmo.dBfac1dT(zX, mX)
+            BY1 = cosmo.Bfac1(zY, mY);  BY2 = cosmo.Bfac2(zY, mY)
+            dBY1 = cosmo.dBfac1dT(zY, mY)
+            lamX = cosmo.lambda_i(zX);  lamY = cosmo.lambda_i(zY)
+
+            lnYeqX = cosmo.ln_Yeq(zX, gX, mX, include_antiparticlesX, s)
+            lnYeqY = cosmo.ln_Yeq(zY, gY, mY, include_antiparticlesY, s)
+            lnYX = lnYeqX + muX;  lnYY = lnYeqY
+            YX = np.exp(np.clip(lnYX, -700, 700))
+            YY = np.exp(np.clip(lnYY, -700, 700))
+            nX = YX * s;  nY = YY * s
+
+            rho_h = max(BX1 * nX + BY1 * nY, 0.0)
+            Htot  = np.sqrt(H**2 + rho_h / (3.0 * Mpl**2))
+
+            return dict(
+                xi=xi, T=T, TD=TD, s=s, H=H, Htot=Htot,
+                dlngSdlnT=dlngSdlnT_val, g_tilde=g_tilde, zX=zX, zY=zY,
+                BX1=BX1, BX2=BX2, dBX1=dBX1,
+                BY1=BY1, BY2=BY2, dBY1=dBY1,
+                lnYeqX=lnYeqX, lnYeqY=lnYeqY,
+                YX=YX, YY=YY, nX=nX, nY=nY,
+                lamX=lamX, lamY=lamY,
+            )
+
+        # === Phase 1: Equilibrium ===
+
+        def dlnxi_dx_equilibrium(x, lnxi):
+            th = _thermo_full(x, lnxi, 0.0, 0.0)
+            neqX, neqY = th['nX'], th['nY']
+            Num = neqY * th['BY2'] + neqX * th['BX2']
+            dneqX = cosmo.dneqdT_MB(th['zX'], gX, mX, include_antiparticlesX)
+            dneqY = cosmo.dneqdT_MB(th['zY'], gY, mY, include_antiparticlesY)
+            Den = (th['BX1'] * dneqX + th['dBX1'] * neqX
+                   + th['BY1'] * dneqY + th['dBY1'] * neqY)
+            if np.abs(Den) < 1e-300:
+                Den = np.copysign(1e-300, Den)
+            dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
+            Gamma_over_H_ann = (th['s'] / th['Htot']
+                         * (th['sv_XXYY'] * ann_sym) * th['YX'])
+            return dlnxi, Gamma_over_H_ann
+
+        def BEQs_eq(t, y):
+            dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
+            return [np.clip(dlnxi, -10.0 / t, 10.0 / t)]
+
+        def ann_switch_event(t, y):
+            """Event: Gamma_over_H_ann - threshold = 0.  Terminal, direction=-1."""
+            _, Gamma_over_H_ann = dlnxi_dx_equilibrium(t, y[0])
+            return Gamma_over_H_ann - Gamma_switch_QSSA
+        ann_switch_event.terminal  = True
+        ann_switch_event.direction = -1
+
+        # === Phase 1.5: QSSA (muY=0, evolve lnxi & muX) ===
+
+        def compute_derivatives_QSSA(x, lnxi, muX):
+            th = _thermo_Yeq(x, lnxi, muX)
+            g_tilde = th['g_tilde']
+            nX, nY = th['nX'], th['nY']
+
+            YXeq = np.exp(np.clip(th['lnYeqX'], -700, 700))
+            sv = model.sigmav_XX_to_YY(th['TD'])
+            Gamma_coll = th['s'] * g_tilde / (th['Htot'] * x) * sv * YXeq
+
+            A = -Gamma_coll * np.sinh(muX) + (th['lamX'] - 3.0 * g_tilde) / x
+            B = -th['lamX']
+
+            D_cal  = nX * th['dBX1'] + nY * th['dBY1']
+            E_cal  = th['BX1'] * nX * th['lamX'] + th['BY1'] * nY * th['lamY']
+            Dtilde = th['TD'] * D_cal + E_cal
+            if np.abs(Dtilde) < 1e-300:
+                Dtilde = np.copysign(1e-300, Dtilde)
+
+            Num_xi = nX * th['BX2'] + nY * th['BY2']
+            C_xi = (1.0 / x) * (1.0 - 3.0 * g_tilde * Num_xi / Dtilde)
+            D_xi = -th['BX1'] * nX / Dtilde
+
+            denom = 1.0 - B * D_xi
+            if np.abs(denom) < 1e-300:
+                denom = np.copysign(1e-300, denom)
+
+            dlnxi_dx = np.clip((C_xi + D_xi * A) / denom, -10.0 / x, 10.0 / x)
+            dmuX_dx  = (A + B * C_xi) / denom
+
+            if muX > 0.05 and state["x_FO"] is None:
+                state["x_FO"] = x
+
+            return dlnxi_dx, dmuX_dx
+
+        def BEQs_QSSA(t, y):
+            return compute_derivatives_QSSA(t, *y)
+
+        def cannibal_switch_event(t, y):
+            """Event: Gamma_over_H_can - threshold = 0.  Terminal, direction=-1."""
+            return estimate_cannibal_rate(t, y[0], y[1]) - cannibal_switch_full
+        cannibal_switch_event.terminal  = True
+        cannibal_switch_event.direction = -1
+
+        def estimate_cannibal_rate(x, lnxi, muX):
+            th = _thermo_Yeq(x, lnxi, muX)
+            YX, YY = th['YX'], th['YY']
+            sv_YYY = model.sigmav2_YYY_to_YY(th['TD'])
+            S_3to2 = (YY**2 * sv_YYY
+                      + YY * YX * sv_YYX_YX
+                      + YX**2 * sv_YXX_XX)
+            return th['s']**2 / th['Htot'] * S_3to2
+
+        # === Phase 2: Full system ===
+
+        def compute_derivatives_full(x, lnxi, muX, muY):
+            th = _thermo_full(x, lnxi, muX, muY)
+            g_tilde = th['g_tilde']
+            YX, YY  = th['YX'], th['YY']
+            nX, nY  = th['nX'], th['nY']
+
+            Pfac = th['s'] * g_tilde / (th['Htot'] * x) * (th['sv_XXYY'] * ann_sym)
+            RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -700, 700))
+
+            coll_X = Pfac * (YX - RXY2_YY2 / YX) if YX > 1e-300 else 0.0
+            A = -coll_X + (th['lamX'] - 3.0 * g_tilde) / x
+            B = -th['lamX']
+
+            coll_Y_2to2 = Pfac * (YX**2 - RXY2_YY2) / YY if YY > 1e-300 else 0.0
+            S_3to2 = (YY**2 * th['sv_YYY_YY']
+                      + YY * YX * sv_YYX_YX
+                      + YX**2 * sv_YXX_XX)
+            Gamma_over_H_can = th['s']**2 * g_tilde / (th['Htot'] * x) * S_3to2
+
+            if muY > 50:
+                one_m = 1.0
+            elif muY < -50:
+                one_m = -np.exp(-muY)
+            else:
+                one_m = 1.0 - np.exp(-muY)
+
+            C = coll_Y_2to2 - Gamma_over_H_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
+            D = -th['lamY']
+
+            D_cal  = nX * th['dBX1'] + nY * th['dBY1']
+            E_cal  = th['BX1'] * nX * th['lamX'] + th['BY1'] * nY * th['lamY']
+            Dtilde = th['TD'] * D_cal + E_cal
+            if np.abs(Dtilde) < 1e-300:
+                Dtilde = np.copysign(1e-300, Dtilde)
+
+            rho_plus_P = nX * th['BX2'] + nY * th['BY2']
+            E = (1.0 / x) * (1.0 - 3.0 * g_tilde * rho_plus_P / Dtilde)
+            F = -th['BX1'] * nX / Dtilde
+            G = -th['BY1'] * nY / Dtilde
+
+            denom = 1.0 - F * B - G * D
+            if np.abs(denom) < 1e-300:
+                denom = np.copysign(1e-300, denom)
+
+            dlnxi_dx = np.clip((E + F * A + G * C) / denom, -10.0 / x, 10.0 / x)
+            dmuX_dx  = A + B * dlnxi_dx
+            dmuY_dx  = C + D * dlnxi_dx
+
+            if muX > 0.05 and state["x_FO"] is None:
+                state["x_FO"] = x
+
+            return dlnxi_dx, dmuX_dx, dmuY_dx
+
+        def BEQs_full(t, y):
+            return compute_derivatives_full(t, *y)
+
+        # === Convergence check helper ===
+
+        def _check_convergence(x0, lnxi_now, muX_now, g_tilde_now,
+                               phase_label, dlnxi_num_val):
+            nonlocal converged, lnYX_check_prev, x_check_prev
+
+            if state["x_FO"] is None or x0 < 2.0 * state["x_FO"]:
+                return False
+
+            if convergence_mode == 'dlnxi_NR':
+                dlnxi_NR = (1.0 - 2.0 * g_tilde_now) / x0
+                rel_dev = np.abs(dlnxi_num_val - dlnxi_NR) * x0
+                if verbose:
+                    iterator.set_postfix({
+                        'ph': phase_label, 'x': f'{x0:.0f}',
+                        'muX': f'{muX_now:.1f}', 'dev': f'{rel_dev:.1e}'})
+                if rel_dev < convergence_threshold:
+                    converged = True
+                    state["x_converged"] = x0
+                    if verbose:
+                        print(f"\n  Converged ({phase_label}, dlnxi_NR)"
+                              f" at x = {x0:.1f}")
+                    return True
+
+            elif convergence_mode == 'dlnYX':
+                xi_now = np.exp(np.clip(lnxi_now, -20, 20))
+                T_now  = mX / x0
+                zX_now = mX / (xi_now * T_now)
+                lnYX_now = muX_now + cosmo.ln_Yeq(
+                    zX_now, gX, mX, include_antiparticlesX,
+                    cosmo.s_entropy(T_now))
+                if (np.isfinite(lnYX_check_prev) and np.isfinite(lnYX_now)
+                        and x0 > x_check_prev * 1.5):
+                    dlnYX_dlnx = ((lnYX_now - lnYX_check_prev)
+                                  / np.log(x0 / x_check_prev))
+                    if verbose:
+                        iterator.set_postfix({
+                            'ph': phase_label, 'x': f'{x0:.0f}',
+                            'muX': f'{muX_now:.1f}',
+                            '|dlnYX|': f'{np.abs(dlnYX_dlnx):.1e}'})
+                    if np.abs(dlnYX_dlnx) < convergence_threshold:
+                        converged = True
+                        state["x_converged"] = x0
+                        if verbose:
+                            print(f"\n  Converged ({phase_label}, dlnYX)"
+                                  f" at x = {x0:.1f}")
+                        return True
+                    lnYX_check_prev = lnYX_now
+                    x_check_prev = x0
+            return False
+
+        # === Convergence events (continuous detection) ===
+
+        if convergence_mode == 'dlnxi_NR':
+            def _conv_event_QSSA(t, y):
+                if state["x_FO"] is None or t < 2.0 * state["x_FO"]:
+                    return 1.0
+                dlnxi_num, _ = compute_derivatives_QSSA(t, y[0], y[1])
+                g_t = _thermo_Yeq(t, y[0], y[1])['g_tilde']
+                dlnxi_NR = (1.0 - 2.0 * g_t) / t
+                return np.abs(dlnxi_num - dlnxi_NR) * t - convergence_threshold
+            _conv_event_QSSA.terminal  = True
+            _conv_event_QSSA.direction = -1
+
+            def _conv_event_full(t, y):
+                if state["x_FO"] is None or t < 2.0 * state["x_FO"]:
+                    return 1.0
+                dlnxi_num, _, _ = compute_derivatives_full(t, *y)
+                g_t = _thermo_full(t, *y)['g_tilde']
+                dlnxi_NR = (1.0 - 2.0 * g_t) / t
+                return np.abs(dlnxi_num - dlnxi_NR) * t - convergence_threshold
+            _conv_event_full.terminal  = True
+            _conv_event_full.direction = -1
+        else:
+            _conv_event_QSSA = None
+            _conv_event_full = None
+
+        # === Initial conditions ===
+
+        x0    = xmin
+        lnxi0 = (1.0 / 3.0) * np.log(
+            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4)) + np.log(model.xi_ini)
+        lnYX_check_prev = cosmo.ln_Yeq(
+            mX / (mX / x0), gX, mX, include_antiparticlesX,
+            cosmo.s_entropy(mX / x0))
+        x_check_prev = x0
+
+        x_all, lnxi_all = [x0], [lnxi0]
+        muX_all, muY_all = [0.0], [0.0]
+
+        phase = 1
+        y0_eq   = [lnxi0]
+        y0_QSSA = None
+        y0_full = None
+
+        if verbose:
+            print("=" * 60)
+            print("Boltzmann Solver -- QSSA Three-Phase")
+            print("=" * 60)
+            print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
+            print(f"  Phase 1->1.5: Gamma_over_H_ann < {Gamma_switch_QSSA:.0e}")
+            print(f"  Phase 1.5->2: Gamma_over_H_can < {cannibal_switch_full:.0e}")
+            print(f"  Convergence: {convergence_mode}, thr={convergence_threshold}")
+            print("-" * 60)
+
+        # === Main loop ===
+
+        converged = False
+        iterator = tqdm(range(len(xfList)), disable=not verbose, desc="Evolving")
+
+        for j in iterator:
+            xf = xfList[j]
+            if x0 >= xf:
+                continue
+
+            if x0 < 1:
+                xs = np.logspace(np.log10(x0 * 1.001), np.log10(xf * 0.999), n_points)
+            else:
+                xs = np.linspace(x0 * 1.001, xf * 0.999, n_points)
+
+            # ----- PHASE 1 -----
+            if phase == 1:
+                sol = solve_ivp(BEQs_eq, (x0, xf), y0_eq, t_eval=xs,
+                                rtol=rtol_value, atol=1e-12, method='Radau',
+                                max_step=1, events=[ann_switch_event])
+                if not sol.success:
+                    if verbose:
+                        print(f"  Warning (eq): x={x0:.2e}->{xf:.2e}: {sol.message}")
+                    break
+                x_all.extend(sol.t.tolist())
+                lnxi_all.extend(sol.y[0].tolist())
+                muX_all.extend([0.0] * len(sol.t))
+                muY_all.extend([0.0] * len(sol.t))
+
+                # Check if annihilation event fired (Phase 1.5 trigger)
+                event_fired = (sol.t_events is not None
+                               and len(sol.t_events) > 0
+                               and len(sol.t_events[0]) > 0)
+
+                if event_fired:
+                    x_ev = sol.t_events[0][0]
+                    y_ev = sol.y_events[0][0]
+                    _, Gamma_now = dlnxi_dx_equilibrium(x_ev, y_ev[0])
+                    phase = 1.5
+                    x0 = x_ev
+                    state["x_switch_QSSA"] = x0
+                    y0_eq  = [y_ev[0]]
+                    y0_QSSA = [y_ev[0], 0.0]
+                    if verbose:
+                        print(f"\n  -> Phase 1.5 (QSSA) at x = {x0:.2f}"
+                              f" (Gamma_over_H_ann = {Gamma_now:.1e})")
+                else:
+                    x0 = sol.t[-1];  y0_eq = [sol.y[0, -1]]
+
+            # ----- PHASE 1.5 -----
+            elif phase == 1.5:
+                events_15 = [cannibal_switch_event]
+                if _conv_event_QSSA is not None:
+                    events_15.append(_conv_event_QSSA)
+                sol = solve_ivp(BEQs_QSSA, (x0, xf), y0_QSSA, t_eval=xs,
+                                rtol=rtol_value, atol=atol_value,
+                                method='Radau', max_step=1,
+                                events=events_15)
+                if not sol.success:
+                    if verbose:
+                        print(f"  Warning (QSSA): x={x0:.2e}->{xf:.2e}: {sol.message}")
+                    break
+                x_all.extend(sol.t.tolist())
+                lnxi_all.extend(sol.y[0].tolist())
+                muX_all.extend(sol.y[1].tolist())
+                muY_all.extend([0.0] * len(sol.t))
+
+                # Check if cannibal event fired (Phase 2 trigger)
+                cannibal_fired = (sol.t_events is not None
+                                  and len(sol.t_events) > 0
+                                  and len(sol.t_events[0]) > 0)
+                # Check if convergence event fired
+                conv_fired = (_conv_event_QSSA is not None
+                              and sol.t_events is not None
+                              and len(sol.t_events) > 1
+                              and len(sol.t_events[1]) > 0)
+
+                if conv_fired and (not cannibal_fired
+                                   or sol.t_events[1][0] <= sol.t_events[0][0]):
+                    x_ev = sol.t_events[1][0]
+                    converged = True
+                    state["x_converged"] = x_ev
+                    if verbose:
+                        print(f"\n  Converged (1.5, dlnxi_NR, event)"
+                              f" at x = {x_ev:.1f}")
+                    break
+
+                if cannibal_fired:
+                    x_ev  = sol.t_events[0][0]
+                    y_ev  = sol.y_events[0][0]
+                    Gamma_over_H_can_now = estimate_cannibal_rate(x_ev, y_ev[0], y_ev[1])
+                    phase = 2
+                    x0 = x_ev
+                    state["x_switch_full"] = x0
+                    y0_QSSA = y_ev.tolist()
+                    y0_full = [y0_QSSA[0], y0_QSSA[1], 0.0]
+                    if verbose:
+                        print(f"\n  -> Phase 2 (full) at x = {x0:.2f}"
+                              f" (Gamma_over_H_can={Gamma_over_H_can_now:.1e},"
+                              f" muX={y0_QSSA[1]:.2f})")
+                else:
+                    x0 = sol.t[-1];  y0_QSSA = sol.y[:, -1].tolist()
+
+            # ----- PHASE 2 -----
+            elif phase == 2:
+                events_2 = [_conv_event_full] if _conv_event_full is not None else None
+                sol = solve_ivp(BEQs_full, (x0, xf), y0_full, t_eval=xs,
+                                rtol=rtol_value, atol=atol_value,
+                                method='Radau', max_step=1,
+                                events=events_2)
+                if not sol.success:
+                    if verbose:
+                        print(f"  Warning (full): x={x0:.2e}->{xf:.2e}: {sol.message}")
+                    break
+
+                # Check if convergence event fired
+                conv_fired = (_conv_event_full is not None
+                              and sol.t_events is not None
+                              and len(sol.t_events) > 0
+                              and len(sol.t_events[0]) > 0)
+
+                if conv_fired:
+                    x_ev = sol.t_events[0][0]
+                    y_ev = sol.y_events[0][0]
+                    # Append trajectory up to the event
+                    x_all.extend(sol.t.tolist())
+                    lnxi_all.extend(sol.y[0].tolist())
+                    muX_all.extend(sol.y[1].tolist())
+                    muY_all.extend(sol.y[2].tolist())
+                    converged = True
+                    state["x_converged"] = x_ev
+                    if verbose:
+                        print(f"\n  Converged (2, dlnxi_NR, event)"
+                              f" at x = {x_ev:.1f}")
+                    break
+
+                x_all.extend(sol.t.tolist())
+                lnxi_all.extend(sol.y[0].tolist())
+                muX_all.extend(sol.y[1].tolist())
+                muY_all.extend(sol.y[2].tolist())
+                x0 = sol.t[-1];  y0_full = sol.y[:, -1].tolist()
+
+                # Fallback discrete convergence check (for dlnYX mode)
+                if convergence_mode == 'dlnYX':
+                    muX_now = sol.y[1, -1]
+                    done = _check_convergence(
+                        x0, sol.y[0, -1], muX_now, None, '2', None)
+                    if done:
+                        break
+
+        # === Post-process ===
+
+        x_arr    = np.array(x_all)
+        lnxi_arr = np.array(lnxi_all)
+        muX_arr  = np.array(muX_all)
+        muY_arr  = np.array(muY_all)
+
+        xi_arr = np.exp(np.clip(lnxi_arr, -20, 20))
+        T_arr  = mX / x_arr
+        TD_arr = xi_arr * T_arr
+        zX_arr = mX / TD_arr;  zY_arr = mY / TD_arr
+
+        lnYX_arr   = np.zeros_like(x_arr)
+        lnYY_arr   = np.zeros_like(x_arr)
+        lnYXeq_arr = np.zeros_like(x_arr)
+        lnYYeq_arr = np.zeros_like(x_arr)
+        for i in range(len(x_arr)):
+            s_i = cosmo.s_entropy(T_arr[i])
+            lnYXeq_arr[i] = cosmo.ln_Yeq(zX_arr[i], gX, mX, include_antiparticlesX, s_i)
+            lnYYeq_arr[i] = cosmo.ln_Yeq(zY_arr[i], gY, mY, include_antiparticlesY, s_i)
+            lnYX_arr[i] = muX_arr[i] + lnYXeq_arr[i]
+            lnYY_arr[i] = muY_arr[i] + lnYYeq_arr[i]
+
+        YX_arr   = np.exp(np.clip(lnYX_arr,   -700, 700))
+        YY_arr   = np.exp(np.clip(lnYY_arr,   -700, 700))
+        YXeq_arr = np.exp(np.clip(lnYXeq_arr, -700, 700))
+        YYeq_arr = np.exp(np.clip(lnYYeq_arr, -700, 700))
+
+        if verbose:
+            print("-" * 60)
+            print("RESULTS:")
+            if state['x_switch_QSSA']:
+                print(f"  x_switch (eq -> QSSA): {state['x_switch_QSSA']:.2f}")
+            if state['x_switch_full']:
+                print(f"  x_switch (QSSA -> full): {state['x_switch_full']:.2f}")
+            else:
+                print(f"  (QSSA carried to convergence, Phase 2 never entered)")
+            if state['x_FO']:
+                print(f"  x_FO (muX > 0.05): {state['x_FO']:.1f}")
+            print(f"  Converged: {converged}"
+                  + (f" at x = {state['x_converged']:.1f}" if converged else ""))
+            print(f"  YX_relic = {YX_arr[-1]:.6e}")
+            print("=" * 60)
+
+        result = {
+            'x': x_arr, 'xi': xi_arr, 'YX': YX_arr, 'YY': YY_arr,
+            'YXeq': YXeq_arr, 'YYeq': YYeq_arr,
+            'mubar_X': muX_arr, 'mubar_Y': muY_arr,
+            'YX_relic': YX_arr[-1], 'YY_final': YY_arr[-1], 'xi_final': xi_arr[-1],
+            'x_FO': state['x_FO'],
+            'x_switch_QSSA': state['x_switch_QSSA'],
+            'x_switch_full': state['x_switch_full'],
+            'x_converged': state['x_converged'], 'converged': converged,
+        }
+        if return_bg_ICs:
+            result['bg_ICs'] = {
+                'x': x_arr, 'xi': xi_arr, 'YX': YX_arr, 'YY': YY_arr,
+                'T': T_arr, 'TD': TD_arr,
+            }
+        return result
+
+    # =============================================================
+    #  [Legacy] Boltzmann solver — chemical-potential formulation (2-phase)
+    # =============================================================
+    def solve_boltzmann_chempot_2phase(
         self,
         xmin: float = 1e-3,
         n_points: int = 500,
@@ -50,11 +646,14 @@ class BoltzmannSolver:
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """
-        Two-phase Boltzmann solver using chemical-potential variables
+        [Legacy] Two-phase Boltzmann solver using chemical-potential variables
         (ln xi, mubar_X, mubar_Y) with Y_i = Y_i^eq exp(mubar_i).
 
         Phase 1 (equilibrium): mubar = 0, evolve only ln xi
         Phase 2 (full):        evolve all three via decoupled A,B,C,D,E,F,G
+
+        Note: Superseded by solve_boltzmann_chempot_3phase.  Retained for
+        testing and comparison only.
         """
         cosmo = self.cosmo
         model = self.model
@@ -62,6 +661,8 @@ class BoltzmannSolver:
         gX, gY = model.gX, model.gY
         include_antiparticlesX = model.include_antiparticlesX
         include_antiparticlesY = model.include_antiparticlesY
+
+        ann_sym = 0.5 if include_antiparticlesX else 1.0
 
         # x-grid
         xfList = np.concatenate([
@@ -71,7 +672,7 @@ class BoltzmannSolver:
         ])
 
         # Temperature-independent cross sections
-        sv_YXX_XX = model.sigmav2_YXX_to_XX()
+        sv_YXX_XX = model.sigmav2_YXX_to_XX() * ann_sym
         sv_YYX_YX = model.sigmav2_YYX_to_YX()
 
         r = mX / mY
@@ -133,9 +734,9 @@ class BoltzmannSolver:
                 Den = np.copysign(1e-300, Den)
 
             dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
-            Gamma_ann = (th['s'] / th['Htot']
-                         * (th['sv_XXYY'] / 2.0) * th['YX'])
-            return dlnxi, Gamma_ann
+            Gamma_over_H_ann = (th['s'] / th['Htot']
+                         * (th['sv_XXYY'] * ann_sym) * th['YX'])
+            return dlnxi, Gamma_over_H_ann
 
         def BEQs_eq(t, y):
             dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
@@ -149,7 +750,7 @@ class BoltzmannSolver:
             YX, YY  = th['YX'], th['YY']
             nX, nY  = th['nX'], th['nY']
 
-            Pfac = th['s'] * g_tilde / (th['Htot'] * x) * (th['sv_XXYY'] / 2.0)
+            Pfac = th['s'] * g_tilde / (th['Htot'] * x) * (th['sv_XXYY'] * ann_sym)
             RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -700, 700))
 
             coll_X = Pfac * (YX - RXY2_YY2 / YX) if YX > 1e-300 else 0.0
@@ -161,7 +762,7 @@ class BoltzmannSolver:
             S_3to2 = (YY**2 * th['sv_YYY_YY']
                       + YY * YX * sv_YYX_YX
                       + YX**2 * sv_YXX_XX)
-            Gamma_can = th['s']**2 * g_tilde / (th['Htot'] * x) * S_3to2
+            Gamma_over_H_can = th['s']**2 * g_tilde / (th['Htot'] * x) * S_3to2
 
             if muY > 50:
                 one_m_expnmuY = 1.0
@@ -170,7 +771,7 @@ class BoltzmannSolver:
             else:
                 one_m_expnmuY = 1.0 - np.exp(-muY)
 
-            C = coll_Y_2to2 - Gamma_can * one_m_expnmuY + (th['lamY'] - 3.0 * g_tilde) / x
+            C = coll_Y_2to2 - Gamma_over_H_can * one_m_expnmuY + (th['lamY'] - 3.0 * g_tilde) / x
             D = -th['lamY']
 
             D_cal  = nX * th['dBX1'] + nY * th['dBY1']
@@ -204,7 +805,7 @@ class BoltzmannSolver:
 
         x0    = xmin
         lnxi0 = (1.0 / 3.0) * np.log(
-            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4)) + np.log(model.xi_infl)
+            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4)) + np.log(model.xi_ini)
         lnYX_check_prev = cosmo.ln_Yeq(
             mX / (mX / x0), gX, mX, include_antiparticlesX, cosmo.s_entropy(mX / x0))
         x_check_prev = x0
@@ -220,7 +821,7 @@ class BoltzmannSolver:
             print("Boltzmann Solver -- Chemical Potential Formulation")
             print("=" * 60)
             print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
-            print(f"  Phase 1->2 switch: Gamma_ann < {Gamma_switch_threshold:.0e}")
+            print(f"  Phase 1->2 switch: Gamma_over_H_ann < {Gamma_switch_threshold:.0e}")
             print(f"  Convergence mode: {convergence_mode}")
             print(f"  Convergence threshold: {convergence_threshold}")
             print("-" * 60)
@@ -261,7 +862,7 @@ class BoltzmannSolver:
                     y0_full = [y0_eq[0], 0.0, 0.0]
                     if verbose:
                         print(f"\n  -> Full system at x = {x0:.2f}"
-                              f" (Gamma_ann = {Gamma_now:.1e})")
+                              f" (Gamma_over_H_ann = {Gamma_now:.1e})")
 
             else:
                 sol = solve_ivp(BEQs_full, (x0, xf), y0_full, t_eval=xs,
@@ -386,524 +987,7 @@ class BoltzmannSolver:
         return result
 
     # =============================================================
-    #  Boltzmann solver — QSSA three-phase
-    # =============================================================
-    def solve_boltzmann_chempot_QSSA(
-        self,
-        xmin: float = 1e-3,
-        xmax: float = None,
-        n_points: int = 500,
-        rtol_value: float = 1e-8,
-        atol_value: float = 1e-15,
-        Gamma_switch_QSSA: float = 5e9,
-        Gamma_switch_full: float = 1e4,
-        cannibal_switch_full: float = 1,
-        convergence_threshold: float = 1e-2,
-        convergence_mode: str = "dlnxi_NR",
-        Tinf: float = 1e14,
-        return_bg_ICs: bool = False,
-        verbose: bool = True,
-    ) -> Dict[str, Any]:
-        """
-        Three-phase QSSA Boltzmann solver using chemical-potential variables.
-
-        Phase 1   : equilibrium (muX=muY=0, evolve ln xi only)
-        Phase 1.5 : QSSA / Y-in-eq (muY=0, evolve ln xi & muX)
-        Phase 2   : full system (evolve ln xi, muX, muY)
-        """
-        cosmo = self.cosmo
-        model = self.model
-        mX, mY = model.mX, model.mY
-        gX, gY = model.gX, model.gY
-        include_antiparticlesX = model.include_antiparticlesX
-        include_antiparticlesY = model.include_antiparticlesY
-
-        r = mX / mY
-        xmax_recommended = r**2 * 1e4
-        if xmax is None:
-            xmax = max(1e5, xmax_recommended)
-        elif xmax < xmax_recommended:
-            import warnings
-            warnings.warn(
-                f"xmax={xmax:.0e} may be too small for r={r:.1f}; "
-                f"recommend xmax >= r^2 * 1e4 = {xmax_recommended:.0e}")
-
-        # Build x-grid up to xmax
-        xf_tail = [x for x in [2e2, 5e2, 1e3, 2e3, 5e3, 1e4] if x < xmax]
-        if xmax > 1e4:
-            xf_tail.extend(np.logspace(np.log10(max(1e4, xf_tail[-1] if xf_tail else 1e4) * 2),
-                                        np.log10(xmax), 10).tolist())
-        xf_tail.append(xmax)
-        xfList = np.concatenate([
-            np.array([1e-2, 1e-1, 0.99]),
-            np.linspace(1, 10, 20),
-            np.arange(10.5, 100, 1),
-            np.array(xf_tail),
-        ])
-        xfList = np.unique(xfList)
-
-        sv_YXX_XX = model.sigmav2_YXX_to_XX()
-        sv_YYX_YX = model.sigmav2_YYX_to_YX()
-
-        state = {"x_FO": None, "x_switch_QSSA": None,
-                 "x_switch_full": None, "x_converged": None}
-
-        # --- Thermodynamics: full (Phase 1 & 2) ---
-
-        def _thermo_full(x, lnxi, muX, muY):
-            xi = np.exp(np.clip(lnxi, -20, 20))
-            T  = mX / x;  TD = xi * T
-            s  = cosmo.s_entropy(T);  H = cosmo.hubble(T)
-            dlngSdlnT_val = cosmo.dlngSdlnT(T)
-            g_tilde = 1.0 + dlngSdlnT_val / 3.0
-            zX = mX / TD;  zY = mY / TD
-
-            BX1 = cosmo.Bfac1(zX, mX);  BX2 = cosmo.Bfac2(zX, mX)
-            dBX1 = cosmo.dBfac1dT(zX, mX)
-            BY1 = cosmo.Bfac1(zY, mY);  BY2 = cosmo.Bfac2(zY, mY)
-            dBY1 = cosmo.dBfac1dT(zY, mY)
-            lamX = cosmo.lambda_i(zX);  lamY = cosmo.lambda_i(zY)
-
-            lnYeqX = cosmo.ln_Yeq(zX, gX, mX, include_antiparticlesX, s)
-            lnYeqY = cosmo.ln_Yeq(zY, gY, mY, include_antiparticlesY, s)
-            lnYX = lnYeqX + muX;  lnYY = lnYeqY + muY
-            YX = np.exp(np.clip(lnYX, -700, 700))
-            YY = np.exp(np.clip(lnYY, -700, 700))
-            nX = YX * s;  nY = YY * s
-
-            rho_h = max(BX1 * nX + BY1 * nY, 0.0)
-            Htot  = np.sqrt(H**2 + rho_h / (3.0 * Mpl**2))
-
-            return dict(
-                xi=xi, T=T, TD=TD, s=s, H=H, Htot=Htot,
-                dlngSdlnT=dlngSdlnT_val, g_tilde=g_tilde, zX=zX, zY=zY,
-                BX1=BX1, BX2=BX2, dBX1=dBX1,
-                BY1=BY1, BY2=BY2, dBY1=dBY1,
-                lnYeqX=lnYeqX, lnYeqY=lnYeqY, lnRXY=lnYeqX - lnYeqY,
-                YX=YX, YY=YY, lnYX=lnYX, lnYY=lnYY, nX=nX, nY=nY,
-                lamX=lamX, lamY=lamY,
-                sv_YYY_YY=model.sigmav2_YYY_to_YY(TD),
-                sv_XXYY=model.sigmav_XX_to_YY(TD),
-            )
-
-        # --- Thermodynamics: Y-in-eq (Phase 1.5) ---
-
-        def _thermo_Yeq(x, lnxi, muX):
-            xi = np.exp(np.clip(lnxi, -20, 20))
-            T  = mX / x;  TD = xi * T
-            s  = cosmo.s_entropy(T);  H = cosmo.hubble(T)
-            dlngSdlnT_val = cosmo.dlngSdlnT(T)
-            g_tilde = 1.0 + dlngSdlnT_val / 3.0
-            zX = mX / TD;  zY = mY / TD
-
-            BX1 = cosmo.Bfac1(zX, mX);  BX2 = cosmo.Bfac2(zX, mX)
-            dBX1 = cosmo.dBfac1dT(zX, mX)
-            BY1 = cosmo.Bfac1(zY, mY);  BY2 = cosmo.Bfac2(zY, mY)
-            dBY1 = cosmo.dBfac1dT(zY, mY)
-            lamX = cosmo.lambda_i(zX);  lamY = cosmo.lambda_i(zY)
-
-            lnYeqX = cosmo.ln_Yeq(zX, gX, mX, include_antiparticlesX, s)
-            lnYeqY = cosmo.ln_Yeq(zY, gY, mY, include_antiparticlesY, s)
-            lnYX = lnYeqX + muX;  lnYY = lnYeqY
-            YX = np.exp(np.clip(lnYX, -700, 700))
-            YY = np.exp(np.clip(lnYY, -700, 700))
-            nX = YX * s;  nY = YY * s
-
-            rho_h = max(BX1 * nX + BY1 * nY, 0.0)
-            Htot  = np.sqrt(H**2 + rho_h / (3.0 * Mpl**2))
-
-            return dict(
-                xi=xi, T=T, TD=TD, s=s, H=H, Htot=Htot,
-                dlngSdlnT=dlngSdlnT_val, g_tilde=g_tilde, zX=zX, zY=zY,
-                BX1=BX1, BX2=BX2, dBX1=dBX1,
-                BY1=BY1, BY2=BY2, dBY1=dBY1,
-                lnYeqX=lnYeqX, lnYeqY=lnYeqY,
-                YX=YX, YY=YY, nX=nX, nY=nY,
-                lamX=lamX, lamY=lamY,
-            )
-
-        # === Phase 1: Equilibrium ===
-
-        def dlnxi_dx_equilibrium(x, lnxi):
-            th = _thermo_full(x, lnxi, 0.0, 0.0)
-            neqX, neqY = th['nX'], th['nY']
-            Num = neqY * th['BY2'] + neqX * th['BX2']
-            dneqX = cosmo.dneqdT_MB(th['zX'], gX, mX, include_antiparticlesX)
-            dneqY = cosmo.dneqdT_MB(th['zY'], gY, mY, include_antiparticlesY)
-            Den = (th['BX1'] * dneqX + th['dBX1'] * neqX
-                   + th['BY1'] * dneqY + th['dBY1'] * neqY)
-            if np.abs(Den) < 1e-300:
-                Den = np.copysign(1e-300, Den)
-            dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
-            Gamma_ann = (th['s'] / th['Htot']
-                         * (th['sv_XXYY'] / 2.0) * th['YX'])
-            return dlnxi, Gamma_ann
-
-        def BEQs_eq(t, y):
-            dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
-            return [np.clip(dlnxi, -10.0 / t, 10.0 / t)]
-
-        # === Phase 1.5: QSSA (muY=0, evolve lnxi & muX) ===
-
-        def compute_derivatives_QSSA(x, lnxi, muX):
-            th = _thermo_Yeq(x, lnxi, muX)
-            g_tilde = th['g_tilde']
-            nX, nY = th['nX'], th['nY']
-
-            YXeq = np.exp(np.clip(th['lnYeqX'], -700, 700))
-            sv = model.sigmav_XX_to_YY(th['TD'])
-            Gamma_coll = th['s'] * g_tilde / (th['Htot'] * x) * sv * YXeq
-
-            A = -Gamma_coll * np.sinh(muX) + (th['lamX'] - 3.0 * g_tilde) / x
-            B = -th['lamX']
-
-            D_cal  = nX * th['dBX1'] + nY * th['dBY1']
-            E_cal  = th['BX1'] * nX * th['lamX'] + th['BY1'] * nY * th['lamY']
-            Dtilde = th['TD'] * D_cal + E_cal
-            if np.abs(Dtilde) < 1e-300:
-                Dtilde = np.copysign(1e-300, Dtilde)
-
-            Num_xi = nX * th['BX2'] + nY * th['BY2']
-            C_xi = (1.0 / x) * (1.0 - 3.0 * g_tilde * Num_xi / Dtilde)
-            D_xi = -th['BX1'] * nX / Dtilde
-
-            denom = 1.0 - B * D_xi
-            if np.abs(denom) < 1e-300:
-                denom = np.copysign(1e-300, denom)
-
-            dlnxi_dx = np.clip((C_xi + D_xi * A) / denom, -10.0 / x, 10.0 / x)
-            dmuX_dx  = (A + B * C_xi) / denom
-
-            if muX > 0.05 and state["x_FO"] is None:
-                state["x_FO"] = x
-
-            return dlnxi_dx, dmuX_dx
-
-        def BEQs_QSSA(t, y):
-            return compute_derivatives_QSSA(t, *y)
-
-        def estimate_cannibal_rate(x, lnxi, muX):
-            th = _thermo_Yeq(x, lnxi, muX)
-            YX, YY = th['YX'], th['YY']
-            sv_YYY = model.sigmav2_YYY_to_YY(th['TD'])
-            S_3to2 = (YY**2 * sv_YYY
-                      + YY * YX * sv_YYX_YX
-                      + YX**2 * sv_YXX_XX)
-            return th['s']**2 / th['Htot'] * S_3to2
-
-        # === Phase 2: Full system ===
-
-        def compute_derivatives_full(x, lnxi, muX, muY):
-            th = _thermo_full(x, lnxi, muX, muY)
-            g_tilde = th['g_tilde']
-            YX, YY  = th['YX'], th['YY']
-            nX, nY  = th['nX'], th['nY']
-
-            Pfac = th['s'] * g_tilde / (th['Htot'] * x) * (th['sv_XXYY'] / 2.0)
-            RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -700, 700))
-
-            coll_X = Pfac * (YX - RXY2_YY2 / YX) if YX > 1e-300 else 0.0
-            A = -coll_X + (th['lamX'] - 3.0 * g_tilde) / x
-            B = -th['lamX']
-
-            coll_Y_2to2 = Pfac * (YX**2 - RXY2_YY2) / YY if YY > 1e-300 else 0.0
-            S_3to2 = (YY**2 * th['sv_YYY_YY']
-                      + YY * YX * sv_YYX_YX
-                      + YX**2 * sv_YXX_XX)
-            Gamma_can = th['s']**2 * g_tilde / (th['Htot'] * x) * S_3to2
-
-            if muY > 50:
-                one_m = 1.0
-            elif muY < -50:
-                one_m = -np.exp(-muY)
-            else:
-                one_m = 1.0 - np.exp(-muY)
-
-            C = coll_Y_2to2 - Gamma_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
-            D = -th['lamY']
-
-            D_cal  = nX * th['dBX1'] + nY * th['dBY1']
-            E_cal  = th['BX1'] * nX * th['lamX'] + th['BY1'] * nY * th['lamY']
-            Dtilde = th['TD'] * D_cal + E_cal
-            if np.abs(Dtilde) < 1e-300:
-                Dtilde = np.copysign(1e-300, Dtilde)
-
-            rho_plus_P = nX * th['BX2'] + nY * th['BY2']
-            E = (1.0 / x) * (1.0 - 3.0 * g_tilde * rho_plus_P / Dtilde)
-            F = -th['BX1'] * nX / Dtilde
-            G = -th['BY1'] * nY / Dtilde
-
-            denom = 1.0 - F * B - G * D
-            if np.abs(denom) < 1e-300:
-                denom = np.copysign(1e-300, denom)
-
-            dlnxi_dx = np.clip((E + F * A + G * C) / denom, -10.0 / x, 10.0 / x)
-            dmuX_dx  = A + B * dlnxi_dx
-            dmuY_dx  = C + D * dlnxi_dx
-
-            if muX > 0.05 and state["x_FO"] is None:
-                state["x_FO"] = x
-
-            return dlnxi_dx, dmuX_dx, dmuY_dx
-
-        def BEQs_full(t, y):
-            return compute_derivatives_full(t, *y)
-
-        # === Convergence check helper ===
-
-        def _check_convergence(x0, lnxi_now, muX_now, g_tilde_now,
-                               phase_label, dlnxi_num_val):
-            nonlocal converged, lnYX_check_prev, x_check_prev
-
-            if state["x_FO"] is None or x0 < 2.0 * state["x_FO"]:
-                return False
-
-            if convergence_mode == 'dlnxi_NR':
-                dlnxi_NR = (1.0 - 2.0 * g_tilde_now) / x0
-                rel_dev = np.abs(dlnxi_num_val - dlnxi_NR) * x0
-                if verbose:
-                    iterator.set_postfix({
-                        'ph': phase_label, 'x': f'{x0:.0f}',
-                        'muX': f'{muX_now:.1f}', 'dev': f'{rel_dev:.1e}'})
-                if rel_dev < convergence_threshold:
-                    converged = True
-                    state["x_converged"] = x0
-                    if verbose:
-                        print(f"\n  Converged ({phase_label}, dlnxi_NR)"
-                              f" at x = {x0:.1f}")
-                    return True
-
-            elif convergence_mode == 'dlnYX':
-                xi_now = np.exp(np.clip(lnxi_now, -20, 20))
-                T_now  = mX / x0
-                zX_now = mX / (xi_now * T_now)
-                lnYX_now = muX_now + cosmo.ln_Yeq(
-                    zX_now, gX, mX, include_antiparticlesX,
-                    cosmo.s_entropy(T_now))
-                if (np.isfinite(lnYX_check_prev) and np.isfinite(lnYX_now)
-                        and x0 > x_check_prev * 1.5):
-                    dlnYX_dlnx = ((lnYX_now - lnYX_check_prev)
-                                  / np.log(x0 / x_check_prev))
-                    if verbose:
-                        iterator.set_postfix({
-                            'ph': phase_label, 'x': f'{x0:.0f}',
-                            'muX': f'{muX_now:.1f}',
-                            '|dlnYX|': f'{np.abs(dlnYX_dlnx):.1e}'})
-                    if np.abs(dlnYX_dlnx) < convergence_threshold:
-                        converged = True
-                        state["x_converged"] = x0
-                        if verbose:
-                            print(f"\n  Converged ({phase_label}, dlnYX)"
-                                  f" at x = {x0:.1f}")
-                        return True
-                    lnYX_check_prev = lnYX_now
-                    x_check_prev = x0
-            return False
-
-        # === Initial conditions ===
-
-        x0    = xmin
-        lnxi0 = (1.0 / 3.0) * np.log(
-            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4)) + np.log(model.xi_infl)
-        lnYX_check_prev = cosmo.ln_Yeq(
-            mX / (mX / x0), gX, mX, include_antiparticlesX,
-            cosmo.s_entropy(mX / x0))
-        x_check_prev = x0
-
-        x_all, lnxi_all = [x0], [lnxi0]
-        muX_all, muY_all = [0.0], [0.0]
-
-        phase = 1
-        y0_eq   = [lnxi0]
-        y0_QSSA = None
-        y0_full = None
-
-        if verbose:
-            print("=" * 60)
-            print("Boltzmann Solver -- QSSA Three-Phase")
-            print("=" * 60)
-            print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
-            print(f"  Phase 1->1.5: Gamma_ann < {Gamma_switch_QSSA:.0e}")
-            print(f"  Phase 1.5->2: Gamma_can < {cannibal_switch_full:.0e}")
-            print(f"  Convergence: {convergence_mode}, thr={convergence_threshold}")
-            print("-" * 60)
-
-        # === Main loop ===
-
-        converged = False
-        iterator = tqdm(range(len(xfList)), disable=not verbose, desc="Evolving")
-
-        for j in iterator:
-            xf = xfList[j]
-            if x0 >= xf:
-                continue
-
-            if x0 < 1:
-                xs = np.logspace(np.log10(x0 * 1.001), np.log10(xf * 0.999), n_points)
-            else:
-                xs = np.linspace(x0 * 1.001, xf * 0.999, n_points)
-
-            # ----- PHASE 1 -----
-            if phase == 1:
-                sol = solve_ivp(BEQs_eq, (x0, xf), y0_eq, t_eval=xs,
-                                rtol=rtol_value, atol=1e-12, method='Radau', max_step=1)
-                if not sol.success:
-                    if verbose:
-                        print(f"  Warning (eq): x={x0:.2e}->{xf:.2e}: {sol.message}")
-                    break
-                x_all.extend(sol.t.tolist())
-                lnxi_all.extend(sol.y[0].tolist())
-                muX_all.extend([0.0] * len(sol.t))
-                muY_all.extend([0.0] * len(sol.t))
-                x0 = sol.t[-1];  y0_eq = [sol.y[0, -1]]
-
-                _, Gamma_now = dlnxi_dx_equilibrium(x0, y0_eq[0])
-                if Gamma_now < Gamma_switch_QSSA:
-                    phase = 1.5
-                    state["x_switch_QSSA"] = x0
-                    y0_QSSA = [y0_eq[0], 0.0]
-                    if verbose:
-                        print(f"\n  -> Phase 1.5 (QSSA) at x = {x0:.2f}"
-                              f" (Gamma_ann = {Gamma_now:.1e})")
-
-            # ----- PHASE 1.5 -----
-            elif phase == 1.5:
-                sol = solve_ivp(BEQs_QSSA, (x0, xf), y0_QSSA, t_eval=xs,
-                                rtol=rtol_value, atol=atol_value,
-                                method='Radau', max_step=1)
-                if not sol.success:
-                    if verbose:
-                        print(f"  Warning (QSSA): x={x0:.2e}->{xf:.2e}: {sol.message}")
-                    break
-                x_all.extend(sol.t.tolist())
-                lnxi_all.extend(sol.y[0].tolist())
-                muX_all.extend(sol.y[1].tolist())
-                muY_all.extend([0.0] * len(sol.t))
-                x0 = sol.t[-1];  y0_QSSA = sol.y[:, -1].tolist()
-
-                # Check Phase 2 trigger
-                Gamma_can_now = estimate_cannibal_rate(x0, y0_QSSA[0], y0_QSSA[1])
-
-                if Gamma_can_now < cannibal_switch_full:
-                    phase = 2
-                    state["x_switch_full"] = x0
-                    y0_full = [y0_QSSA[0], y0_QSSA[1], 0.0]
-                    if verbose:
-                        print(f"\n  -> Phase 2 (full) at x = {x0:.2f}"
-                              f" (Gamma_can={Gamma_can_now:.1e},"
-                              f" muX={y0_QSSA[1]:.2f})")
-
-                # Convergence check in QSSA phase
-                if convergence_mode == 'dlnxi_NR':
-                    dlnxi_num, _ = compute_derivatives_QSSA(
-                        x0, y0_QSSA[0], y0_QSSA[1])
-                    g_tilde_now = _thermo_Yeq(
-                        x0, y0_QSSA[0], y0_QSSA[1])['g_tilde']
-                    done = _check_convergence(
-                        x0, y0_QSSA[0], y0_QSSA[1], g_tilde_now,
-                        '1.5', dlnxi_num)
-                else:
-                    done = _check_convergence(
-                        x0, y0_QSSA[0], y0_QSSA[1], None, '1.5', None)
-                if done:
-                    break
-
-            # ----- PHASE 2 -----
-            elif phase == 2:
-                sol = solve_ivp(BEQs_full, (x0, xf), y0_full, t_eval=xs,
-                                rtol=rtol_value, atol=atol_value,
-                                method='Radau', max_step=1)
-                if not sol.success:
-                    if verbose:
-                        print(f"  Warning (full): x={x0:.2e}->{xf:.2e}: {sol.message}")
-                    break
-                x_all.extend(sol.t.tolist())
-                lnxi_all.extend(sol.y[0].tolist())
-                muX_all.extend(sol.y[1].tolist())
-                muY_all.extend(sol.y[2].tolist())
-                x0 = sol.t[-1];  y0_full = sol.y[:, -1].tolist()
-
-                if convergence_mode == 'dlnxi_NR':
-                    lnxi_now = sol.y[0, -1]
-                    muX_now  = sol.y[1, -1]
-                    muY_now  = sol.y[2, -1]
-                    dlnxi_num, _, _ = compute_derivatives_full(
-                        x0, lnxi_now, muX_now, muY_now)
-                    g_tilde_now = _thermo_full(
-                        x0, lnxi_now, muX_now, muY_now)['g_tilde']
-                    done = _check_convergence(
-                        x0, lnxi_now, muX_now, g_tilde_now,
-                        '2', dlnxi_num)
-                else:
-                    muX_now = sol.y[1, -1]
-                    done = _check_convergence(
-                        x0, sol.y[0, -1], muX_now, None, '2', None)
-                if done:
-                    break
-
-        # === Post-process ===
-
-        x_arr    = np.array(x_all)
-        lnxi_arr = np.array(lnxi_all)
-        muX_arr  = np.array(muX_all)
-        muY_arr  = np.array(muY_all)
-
-        xi_arr = np.exp(np.clip(lnxi_arr, -20, 20))
-        T_arr  = mX / x_arr
-        TD_arr = xi_arr * T_arr
-        zX_arr = mX / TD_arr;  zY_arr = mY / TD_arr
-
-        lnYX_arr   = np.zeros_like(x_arr)
-        lnYY_arr   = np.zeros_like(x_arr)
-        lnYXeq_arr = np.zeros_like(x_arr)
-        lnYYeq_arr = np.zeros_like(x_arr)
-        for i in range(len(x_arr)):
-            s_i = cosmo.s_entropy(T_arr[i])
-            lnYXeq_arr[i] = cosmo.ln_Yeq(zX_arr[i], gX, mX, include_antiparticlesX, s_i)
-            lnYYeq_arr[i] = cosmo.ln_Yeq(zY_arr[i], gY, mY, include_antiparticlesY, s_i)
-            lnYX_arr[i] = muX_arr[i] + lnYXeq_arr[i]
-            lnYY_arr[i] = muY_arr[i] + lnYYeq_arr[i]
-
-        YX_arr   = np.exp(np.clip(lnYX_arr,   -700, 700))
-        YY_arr   = np.exp(np.clip(lnYY_arr,   -700, 700))
-        YXeq_arr = np.exp(np.clip(lnYXeq_arr, -700, 700))
-        YYeq_arr = np.exp(np.clip(lnYYeq_arr, -700, 700))
-
-        if verbose:
-            print("-" * 60)
-            print("RESULTS:")
-            if state['x_switch_QSSA']:
-                print(f"  x_switch (eq -> QSSA): {state['x_switch_QSSA']:.2f}")
-            if state['x_switch_full']:
-                print(f"  x_switch (QSSA -> full): {state['x_switch_full']:.2f}")
-            else:
-                print(f"  (QSSA carried to convergence, Phase 2 never entered)")
-            if state['x_FO']:
-                print(f"  x_FO (muX > 0.05): {state['x_FO']:.1f}")
-            print(f"  Converged: {converged}"
-                  + (f" at x = {state['x_converged']:.1f}" if converged else ""))
-            print(f"  YX_relic = {YX_arr[-1]:.6e}")
-            print("=" * 60)
-
-        result = {
-            'x': x_arr, 'xi': xi_arr, 'YX': YX_arr, 'YY': YY_arr,
-            'YXeq': YXeq_arr, 'YYeq': YYeq_arr,
-            'mubar_X': muX_arr, 'mubar_Y': muY_arr,
-            'YX_relic': YX_arr[-1], 'YY_final': YY_arr[-1], 'xi_final': xi_arr[-1],
-            'x_FO': state['x_FO'],
-            'x_switch_QSSA': state['x_switch_QSSA'],
-            'x_switch_full': state['x_switch_full'],
-            'x_converged': state['x_converged'], 'converged': converged,
-        }
-        if return_bg_ICs:
-            result['bg_ICs'] = {
-                'x': x_arr, 'xi': xi_arr, 'YX': YX_arr, 'YY': YY_arr,
-                'T': T_arr, 'TD': TD_arr,
-            }
-        return result
-
-    # =============================================================
-    #  Boltzmann solver — hybrid Y-variables -> mu-variables
+    #  [Legacy] Boltzmann solver — hybrid Y-variables -> mu-variables
     # =============================================================
     def solve_boltzmann_hybrid(
         self,
@@ -922,11 +1006,15 @@ class BoltzmannSolver:
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """
-        Three-phase hybrid Boltzmann solver.
+        [Legacy] Three-phase hybrid Boltzmann solver.
 
         Phase 1   : equilibrium (muX=muY=0, evolve ln xi only)
         Phase 1.5 : Y-variables (ln xi, YX, YY)
         Phase 2   : mu-variables (ln xi, muX, muY)
+
+        Note: Superseded by solve_boltzmann_chempot_3phase.  The Y-variable
+        intermediate phase can suffer from numerical issues when Y_Y spans
+        many orders of magnitude.  Retained for testing and comparison only.
         """
         cosmo = self.cosmo
         model = self.model
@@ -935,13 +1023,15 @@ class BoltzmannSolver:
         include_antiparticlesX = model.include_antiparticlesX
         include_antiparticlesY = model.include_antiparticlesY
 
+        ann_sym = 0.5 if include_antiparticlesX else 1.0
+
         xfList = np.concatenate([
             np.array([1e-2, 1e-1, 0.99]),
             np.arange(1, 100, 1),
             np.array([2e2, 5e2, 1e3, 2e3, 5e3]),
         ])
 
-        sv_YXX_XX = model.sigmav2_YXX_to_XX()
+        sv_YXX_XX = model.sigmav2_YXX_to_XX() * ann_sym
         sv_YYX_YX = model.sigmav2_YYX_to_YX()
 
         r = mX / mY
@@ -1004,9 +1094,9 @@ class BoltzmannSolver:
             if np.abs(Den) < 1e-300:
                 Den = np.copysign(1e-300, Den)
             dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
-            Gamma_ann = (th['s'] / Htot
-                         * (th['sv_XXYY'] / 2.0) * th['YeqX'])
-            return dlnxi, Gamma_ann
+            Gamma_over_H_ann = (th['s'] / Htot
+                         * (th['sv_XXYY'] * ann_sym) * th['YeqX'])
+            return dlnxi, Gamma_over_H_ann
 
         def BEQs_eq(t, y):
             dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
@@ -1030,7 +1120,7 @@ class BoltzmannSolver:
                 ratio = 0.0
             term1 = YX + ratio * YY
             term2 = YX - ratio * YY
-            dYX_dx = -PreFac * (th['sv_XXYY'] / 2.0) * term1 * term2
+            dYX_dx = -PreFac * (th['sv_XXYY'] * ann_sym) * term1 * term2
 
             sv_YYY = th['sv_YYY']
             S_3to2 = (YY**2 * sv_YYY
@@ -1061,9 +1151,9 @@ class BoltzmannSolver:
                                      / (th['TD'] * Den))
             dlnxi_dx = np.clip(dlnxi_dx, -10.0 / x, 10.0 / x)
 
-            Gamma_can = s**2 / Htot * S_3to2
+            Gamma_over_H_can = s**2 / Htot * S_3to2
 
-            return dlnxi_dx, dYX_dx, dYY_dx, delta_X, Gamma_can
+            return dlnxi_dx, dYX_dx, dYY_dx, delta_X, Gamma_over_H_can
 
         def BEQs_Yield(t, y):
             dlnxi, dYX, dYY, _, _ = compute_derivatives_Yield(t, y[0], y[1], y[2])
@@ -1083,7 +1173,7 @@ class BoltzmannSolver:
             Htot = _Htot(th, nX, nY)
 
             lnRXY = th['lnYeqX'] - th['lnYeqY']
-            Pfac = s * g_tilde / (Htot * x) * (th['sv_XXYY'] / 2.0)
+            Pfac = s * g_tilde / (Htot * x) * (th['sv_XXYY'] * ann_sym)
             RXY2_YY2 = np.exp(np.clip(2.0 * lnRXY + 2.0 * lnYY, -700, 700))
 
             coll_X = Pfac * (YX - RXY2_YY2 / YX) if YX > 1e-300 else 0.0
@@ -1094,7 +1184,7 @@ class BoltzmannSolver:
             S_3to2 = (YY**2 * th['sv_YYY']
                       + YY * YX * sv_YYX_YX
                       + YX**2 * sv_YXX_XX)
-            Gamma_can = s**2 * g_tilde / (Htot * x) * S_3to2
+            Gamma_over_H_can = s**2 * g_tilde / (Htot * x) * S_3to2
 
             if muY > 50:
                 one_m = 1.0
@@ -1103,7 +1193,7 @@ class BoltzmannSolver:
             else:
                 one_m = 1.0 - np.exp(-muY)
 
-            C = coll_Y_2to2 - Gamma_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
+            C = coll_Y_2to2 - Gamma_over_H_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
             D = -th['lamY']
 
             D_cal  = nX * th['dBX1'] + nY * th['dBY1']
@@ -1137,7 +1227,7 @@ class BoltzmannSolver:
 
         x0    = xmin
         lnxi0 = (1.0 / 3.0) * np.log(
-            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4)) + np.log(model.xi_infl)
+            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4)) + np.log(model.xi_ini)
 
         T0 = mX / x0;  s0 = cosmo.s_entropy(T0)
         YX0 = cosmo.neq_MB(mX / T0, gX, mX, include_antiparticlesX) / s0
@@ -1160,8 +1250,8 @@ class BoltzmannSolver:
             print("Boltzmann Solver -- Hybrid Y -> mu")
             print("=" * 60)
             print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
-            print(f"  Phase 1->1.5 (Yield): Gamma_ann < {Gamma_switch_Yield:.0e}")
-            print(f"  Phase 1.5->2 (mu): Gamma_can < {cannibal_switch_mu:.0e}"
+            print(f"  Phase 1->1.5 (Yield): Gamma_over_H_ann < {Gamma_switch_Yield:.0e}")
+            print(f"  Phase 1.5->2 (mu): Gamma_over_H_can < {cannibal_switch_mu:.0e}"
                   f" OR delta > {delta_switch_mu}")
             print(f"  Convergence: {convergence_mode}, thr={convergence_threshold}")
             print("-" * 60)
@@ -1209,7 +1299,7 @@ class BoltzmannSolver:
                     y0_Yield = [y0_eq[0], th_sw['YeqX'], th_sw['YeqY']]
                     if verbose:
                         print(f"\n  -> Phase 1.5 (Yield) at x = {x0:.2f}"
-                              f" (Gamma_ann = {Gamma_now:.1e})")
+                              f" (Gamma_over_H_ann = {Gamma_now:.1e})")
 
             # ----- PHASE 1.5: Y-variables -----
             elif phase == 1.5:
@@ -1229,19 +1319,19 @@ class BoltzmannSolver:
                 muY_all.extend([0.0] * len(sol.t))
                 x0 = sol.t[-1];  y0_Yield = sol.y[:, -1].tolist()
 
-                _, _, _, delta_now, Gamma_can_now = compute_derivatives_Yield(
+                _, _, _, delta_now, Gamma_over_H_can_now = compute_derivatives_Yield(
                     x0, y0_Yield[0], y0_Yield[1], y0_Yield[2])
 
                 if verbose:
                     iterator.set_postfix({
                         'ph': '1.5', 'x': f'{x0:.1f}',
-                        'delta': f'{delta_now:.1e}', 'G_c': f'{Gamma_can_now:.1e}'})
+                        'delta': f'{delta_now:.1e}', 'G_c': f'{Gamma_over_H_can_now:.1e}'})
 
-                if Gamma_can_now < cannibal_switch_mu or delta_now > delta_switch_mu:
+                if Gamma_over_H_can_now < cannibal_switch_mu or delta_now > delta_switch_mu:
                     phase = 2
                     state["x_switch_mu"] = x0
-                    reason = (f"Gamma_can={Gamma_can_now:.1e}"
-                              if Gamma_can_now < cannibal_switch_mu
+                    reason = (f"Gamma_over_H_can={Gamma_over_H_can_now:.1e}"
+                              if Gamma_over_H_can_now < cannibal_switch_mu
                               else f"delta={delta_now:.1e}")
                     state["switch_reason"] = reason
 
@@ -1388,7 +1478,7 @@ class BoltzmannSolver:
         return result
 
     # =============================================================
-    #  Boltzmann solver — Y in equilibrium
+    #  [Legacy] Boltzmann solver — Y in equilibrium
     # =============================================================
     def solve_boltzmann_Yeq(
         self,
@@ -1403,8 +1493,13 @@ class BoltzmannSolver:
         verbose: bool = True,
     ) -> Dict[str, Any]:
         """
-        Boltzmann solver assuming Y remains in thermal equilibrium.
+        [Legacy] Boltzmann solver assuming Y remains in thermal equilibrium.
         Solves for (ln xi, mubar_X) only -- two state variables.
+
+        Note: Superseded by solve_boltzmann_chempot_3phase, whose QSSA phase
+        is equivalent but transitions to the full system when cannibal
+        processes freeze out.  Uses only the s-wave cross section.
+        Retained for testing and comparison only.
         """
         cosmo = self.cosmo
         model = self.model
@@ -1476,9 +1571,9 @@ class BoltzmannSolver:
                 Den = np.copysign(1e-300, Den)
 
             dlnxi = (1.0 / x) * (1.0 - (3.0 + th['dlngSdlnT']) * Num / (th['TD'] * Den))
-            Gamma_ann = (th['s'] / th['Htot']
+            Gamma_over_H_ann = (th['s'] / th['Htot']
                          * sv_XXYY * th['YX'])
-            return dlnxi, Gamma_ann
+            return dlnxi, Gamma_over_H_ann
 
         def BEQs_eq(t, y):
             dlnxi, _ = dlnxi_dx_equilibrium(t, y[0])
@@ -1527,7 +1622,7 @@ class BoltzmannSolver:
 
         x0    = xmin
         lnxi0 = (1.0 / 3.0) * np.log(
-            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4)) + np.log(model.xi_infl)
+            np.round(cosmo.gstarS(mX / xmin) / cosmo.gstarS(Tinf), 4)) + np.log(model.xi_ini)
         lnYX_check_prev = cosmo.ln_Yeq(
             mX / (mX / x0), gX, mX, include_antiparticlesX,
             cosmo.s_entropy(mX / x0))
@@ -1543,7 +1638,7 @@ class BoltzmannSolver:
             print("Boltzmann Solver -- Y in Equilibrium")
             print("=" * 60)
             print(f"  mX = {mX:.2e} GeV, mY = {mY:.2e} GeV, r = {r:.2f}")
-            print(f"  Phase 1->2 switch: Gamma_ann < {Gamma_switch_threshold:.0e}")
+            print(f"  Phase 1->2 switch: Gamma_over_H_ann < {Gamma_switch_threshold:.0e}")
             print(f"  Convergence: |d ln YX / d ln x| < {convergence_threshold}")
             print("-" * 60)
 
@@ -1582,7 +1677,7 @@ class BoltzmannSolver:
                     y0_full = [y0_eq[0], 0.0]
                     if verbose:
                         print(f"\n  -> Full system at x = {x0:.2f}"
-                              f" (Gamma_ann = {Gamma_now:.1e})")
+                              f" (Gamma_over_H_ann = {Gamma_now:.1e})")
 
             else:
                 sol = solve_ivp(BEQs_full, (x0, xf), y0_full, t_eval=xs,
@@ -1689,12 +1784,19 @@ class BoltzmannSolver:
         stop_on_rhoY: bool = True,
         rhoY_threshold: float = 1e-12,
         verbose: bool = False,
+        correct_Y_decay: bool = False,
     ) -> Dict[str, Any]:
         """
         Background evolution: late-time Y decay with entropy injection.
 
         Evolves three log-scaled variables in e-folds N = ln(a/a_0):
             y[0] = ln(T/T_0),  y[1] = ln(rhoY/rhoY_0),  y[2] = ln(rhoX/rhoX_0)
+
+        If correct_Y_decay is True, the initial conditions are corrected
+        for Y decay that occurred during the Boltzmann evolution (which
+        assumes Y is stable).  The correction integrates the decay and
+        entropy injection along the Boltzmann trajectory and adjusts
+        YY0, T0, and YX0 before starting the ODE.
         """
         cosmo = self.cosmo
         model = self.model
@@ -1707,12 +1809,57 @@ class BoltzmannSolver:
         T0  = bg_ICs['T'][-1]
         TD0 = bg_ICs['TD'][-1]
 
+        GammaY  = model.decay_width_to_SM(epsX)
+
+        # --- Correct for Y decay missed during Boltzmann evolution ---
+        if correct_Y_decay and GammaY > 0:
+            x_traj = bg_ICs['x']
+            T_traj = bg_ICs['T']
+            YX_traj = bg_ICs['YX']
+            YY_traj = bg_ICs['YY']
+
+            # Integrate along the trajectory, tracking how much Y
+            # would have decayed and the entropy each decay deposits
+            # into the SM at the local temperature.
+            f_survive = 1.0
+            ln_S_corr = 0.0
+            for i in range(1, len(x_traj)):
+                x_mid = 0.5 * (x_traj[i] + x_traj[i-1])
+                T_mid = 0.5 * (T_traj[i] + T_traj[i-1])
+                YY_mid = 0.5 * (YY_traj[i] + YY_traj[i-1])
+                s_mid = cosmo.s_entropy(T_mid)
+                H_sm  = cosmo.hubble(T_mid)
+                rho_h = (mX * 0.5*(YX_traj[i]+YX_traj[i-1])
+                         + mY * YY_mid) * s_mid
+                Htot  = np.sqrt(H_sm**2 + rho_h / (3.0 * Mpl**2))
+                g_t   = 1.0 + cosmo.dlngSdlnT(T_mid) / 3.0
+                dx    = x_traj[i] - x_traj[i-1]
+                dt    = dx / (x_mid * Htot * g_t)
+
+                # Fraction of surviving Y that decays in this step
+                f_step = np.exp(-GammaY * dt)
+                dYY_decay = YY_mid * f_survive * (1.0 - f_step)
+
+                # Entropy produced at local T
+                ln_S_corr += dYY_decay * mY / T_mid
+                f_survive *= f_step
+
+            S_ratio_corr = np.exp(ln_S_corr)
+
+            # Apply corrections at the handoff point
+            YY0 = YY0 * f_survive
+            T0  = T0 * S_ratio_corr ** (1.0 / 3.0)
+            YX0 = YX0 / S_ratio_corr
+
+            if verbose:
+                print(f"  Y-decay correction: f_survive={f_survive:.4f}, "
+                      f"S_ratio_corr={S_ratio_corr:.4f}")
+
         s0    = cosmo.s_entropy(T0)
         rhoX0 = mX * YX0 * s0
         rhoY0 = cosmo.Bfac1(mY / TD0, mY) * YY0 * s0
 
         sv_XXYY = model.sigmav_XX_to_YY_swave()
-        GammaY  = model.decay_width_to_SM(epsX)
 
         def rho_r(T):
             return np.pi**2 / 30.0 * cosmo.gstar(T) * T**4
@@ -1739,7 +1886,8 @@ class BoltzmannSolver:
             injection = rhoY * GammaY / (max(H, 1e-300) * 3.0 * s * T)
             dlnT_dN   = -1.0 / g_tilde_val * (1.0 - injection)
 
-            dlnrhoX_dN = -3.0 - sv_XXYY * rhoX / (2.0 * mX * max(H, 1e-300))
+            ann_sym_bg = 0.5 if include_antiparticlesX else 1.0
+            dlnrhoX_dN = -3.0 - sv_XXYY * ann_sym_bg * rhoX / (mX * max(H, 1e-300))
 
             return [dlnT_dN, dlnrhoY_dN, dlnrhoX_dN]
 
@@ -1953,6 +2101,40 @@ class BoltzmannSolver:
         return 10.0 ** log10eps
 
     # =============================================================
+    #  Epsilon finder — thermalization floor
+    # =============================================================
+    def find_epsilon_thermal_floor(self, x_FO: float = 20.0) -> float:
+        """
+        Minimum portal coupling for the dark sector to remain in thermal
+        equilibrium with the SM at freeze-out.
+
+        Requires Gamma(Y -> SM) >= H(T_FO), where T_FO = mX / x_FO.
+        Since Gamma scales as eps^2, the bound is:
+            eps = sqrt(H_FO / Gamma_norm)
+        where Gamma_norm = decay_width_to_SM(eps=1).
+
+        Based on the estimate in Sec. 3.1.2 of arXiv:2509.08043.
+
+        Parameters
+        ----------
+        x_FO : float
+            Freeze-out parameter x = mX / T_FO (default: 20).
+
+        Returns
+        -------
+        eps_therm : float
+            Minimum portal coupling for thermalization.
+        """
+        T_FO = self.model.mX / x_FO
+        H_FO = self.cosmo.hubble(T_FO)
+
+        Gamma_norm = self.model.decay_width_to_SM(1.0)
+        if Gamma_norm <= 0:
+            return np.inf
+
+        return np.sqrt(H_FO / Gamma_norm)
+
+    # =============================================================
     #  Epsilon finder — direct-detection constraint
     # =============================================================
     def find_epsilon_DD(
@@ -1969,6 +2151,7 @@ class BoltzmannSolver:
         ----------
         constraint : str or callable
             'LZ'          — LZ 90% CL upper limit (9–10000 GeV).
+            'XENONnT'     — XENONnT 2024 combined 90% CL upper limit.
             'nufloor_Xe'  — Xenon SI neutrino floor (0.1–10000 GeV).
             callable      — custom function sigma_limit(mX) -> cm^2.
         log10eps_range : tuple
@@ -1989,13 +2172,16 @@ class BoltzmannSolver:
         elif constraint == 'LZ':
             from .direct_detection import sigma_SI_LZ
             sigma_limit_fn = sigma_SI_LZ
+        elif constraint == 'XENONnT':
+            from .direct_detection import sigma_SI_XENONnT
+            sigma_limit_fn = sigma_SI_XENONnT
         elif constraint == 'nufloor_Xe':
             from .direct_detection import sigma_SI_nufloor_Xe
             sigma_limit_fn = sigma_SI_nufloor_Xe
         else:
             raise ValueError(
                 f"Unknown constraint '{constraint}'. "
-                "Use 'LZ', 'nufloor_Xe', or a callable.")
+                "Use 'LZ', 'XENONnT', 'nufloor_Xe', or a callable.")
 
         mX = self.model.mX
         try:
@@ -2087,10 +2273,10 @@ def find_mXstar(
     _skw.update(solver_kw)
 
     def _solve(solver):
-        if solver_method == "QSSA":
-            return solver.solve_boltzmann_chempot_QSSA(**_skw)
-        elif solver_method == "chempot":
-            return solver.solve_boltzmann_chempot(**_skw)
+        if solver_method in ("QSSA", "3phase"):
+            return solver.solve_boltzmann_chempot_3phase(**_skw)
+        elif solver_method in ("chempot", "2phase"):
+            return solver.solve_boltzmann_chempot_2phase(**_skw)
         elif solver_method == "hybrid":
             return solver.solve_boltzmann_hybrid(**_skw)
         elif solver_method == "Yeq":

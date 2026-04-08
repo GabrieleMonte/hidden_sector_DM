@@ -6,6 +6,7 @@ cross sections.
 
 Provides lazy-loaded, log-log interpolators for:
   - LZ 90% CL upper limit  (SI, Xe target)
+  - XENONnT 2024 combined   (SI, Xe target)
   - Xenon SI neutrino floor
 
 Data files live in ``source/direct_detection_data/``.
@@ -75,6 +76,32 @@ def sigma_SI_LZ(mX):
     if mX < mX_min or mX > mX_max:
         raise ValueError(
             f"mX = {mX} GeV is outside the LZ data range "
+            f"[{mX_min}, {mX_max}] GeV")
+    return 10.0 ** float(interp(np.log10(mX)))
+
+
+def sigma_SI_XENONnT(mX):
+    """XENONnT 2024 combined 90% CL upper limit on SI DM-nucleon cross section [cm^2].
+
+    Parameters
+    ----------
+    mX : float
+        DM mass [GeV].
+
+    Returns
+    -------
+    sigma : float
+        Cross-section limit [cm^2].
+
+    Raises
+    ------
+    ValueError
+        If mX is outside the data range.
+    """
+    interp, mX_min, mX_max = _load_limit('XENONnT_2024_Combined.txt')
+    if mX < mX_min or mX > mX_max:
+        raise ValueError(
+            f"mX = {mX} GeV is outside the XENONnT data range "
             f"[{mX_min}, {mX_max}] GeV")
     return 10.0 ** float(interp(np.log10(mX)))
 

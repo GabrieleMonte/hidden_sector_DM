@@ -35,7 +35,7 @@ model = VectorPortal(
 solver = BoltzmannSolver(cosmo, model)
 
 print("Running cannibal-phase solver...")
-sol0 = solver.solve_boltzmann_chempot_QSSA(
+sol0 = solver.solve_boltzmann_chempot_3phase(
     return_bg_ICs=True, verbose=False,
     Gamma_switch_QSSA=5e9, Gamma_switch_full=1e4,
     n_points=500, rtol_value=1e-8, atol_value=1e-18,

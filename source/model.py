@@ -45,7 +45,7 @@ class DarkSectorModel(ABC):
     gY: int                        # mediator internal DOF
     include_antiparticlesX: bool
     include_antiparticlesY: bool
-    xi_infl: float                 # T_dark / T_SM at reheating
+    xi_ini: float                 # T_dark / T_SM at reheating
 
     # --- 2 -> 2 annihilation ---
 
@@ -136,33 +136,53 @@ class VectorPortal(DarkSectorModel):
         Dark fine-structure constant.
     include_antiparticlesX, include_antiparticlesY : bool
         Whether to double-count for Xbar or Ybar.
-    Delta1, Delta2 : float
-        Phenomenological coefficients for YYY->YY and YXX->XX.
+    Delta1 : float
+        Phenomenological coefficient for YYY->YY.
+    Delta2 : float or None
+        Coefficient for YXX->XX.  If None (default), the exact
+        tree-level result is computed from mX/mY.
     Delta3 : float or None
         Coefficient for YYX->YX.  If None (default), the exact
         tree-level result is computed from mX/mY.
-    xi_infl : float
+    xi_ini : float
         Initial dark-to-SM temperature ratio.
     """
     mX: float = 100.0
-    mY: float = 10.0
+    mY: float = 30.0
     gX: int   = 2
     gY: int   = 3
     alphaX: float = 1e-2
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
     Delta1: float = 0.5
-    Delta2: float = 0.5
+    Delta2: Optional[float] = None
     Delta3: Optional[float] = None
-    xi_infl: float = 1.0
+    xi_ini: float = 1.0
 
     def __post_init__(self):
+        if self.Delta2 is None:
+            self.Delta2 = self._Delta2_exact(self.mX / self.mY)
         if self.Delta3 is None:
             self.Delta3 = self._Delta3_exact(self.mX / self.mY)
 
     # ----------------------------------------------------------
-    #  Exact Delta3 coefficient
+    #  Exact Delta2 and Delta3 coefficients
     # ----------------------------------------------------------
+    @staticmethod
+    def _Delta2_exact(r: float) -> float:
+        """
+        Exact tree-level Delta2 for Z'X-bar X -> X-bar X.
+
+        Parameters
+        ----------
+        r : float
+            Mass ratio mX / mY.
+        """
+        N2 = (256*r**6 - 384*r**5 + 536*r**4
+              - 96*r**3 + 38*r**2 + 72*r + 31)
+        return (np.pi**2 * r**3 * (1 + 4*r)**1.5 * N2
+                / (6 * (1 + 2*r)**3 * (2*r**2 + r - 1)**2))
+
     @staticmethod
     def _Delta3_exact(r: float) -> float:
         """
@@ -191,7 +211,7 @@ class VectorPortal(DarkSectorModel):
         return self._sigmav_XX_to_YY_full(self.mX, self.mY, self.alphaX, TD)
 
     def sigmav_XX_to_YY_swave(self) -> float:
-        return self._sigmav_XX_to_YY_swave(self.mX, self.alphaX)
+        return self._sigmav_XX_to_YY_swave(self.mX, self.mY, self.alphaX)
 
     def sigmav2_YYY_to_YY(self, TD: float) -> float:
         return self._sigmav2_YYY_to_YY(self.mX, self.alphaX, TD, self.Delta1)
@@ -316,9 +336,11 @@ class VectorPortal(DarkSectorModel):
     #  Cross-section formulas (static, used by the interface)
     # ----------------------------------------------------------
     @staticmethod
-    def _sigmav_XX_to_YY_swave(mX: float, alphaX: float) -> float:
-        """<sigma v> for X Xbar -> Y Y  (s-wave, mY -> 0 limit)."""
-        return np.pi * alphaX**2 / mX**2
+    def _sigmav_XX_to_YY_swave(mX: float, mY: float, alphaX: float) -> float:
+        """<sigma v> for X Xbar -> Y Y  (s-wave, finite mY)."""
+        rv = mY / mX
+        return (4.0 * np.pi * alphaX**2 / mX**2
+                * (1.0 - rv**2)**1.5 / (2.0 - rv**2)**2)
 
     @staticmethod
     def _sigmav_XX_to_YY_full(mX: float, mY: float, alphaX: float, TX: float) -> float:
@@ -379,13 +401,15 @@ class BLPortal(DarkSectorModel):
         U(1)_{B-L} gauge coupling.
     m_ZBL : float
         Mass of the Z_{B-L} gauge boson (GeV).
-    Delta1, Delta2 : float
-        Phenomenological coefficients for YYY->YY and YXX->XX.
+    Delta1 : float
+        Phenomenological coefficient for YYY->YY.
+    Delta2 : float or None
+        Coefficient for YXX->XX.  If None, exact tree-level result.
     Delta3 : float or None
         Coefficient for YYX->YX.  If None, exact tree-level result.
     """
     mX: float = 100.0
-    mY: float = 10.0
+    mY: float = 30.0
     gX: int   = 2
     gY: int   = 3
     alphaX: float = 1e-2
@@ -394,11 +418,13 @@ class BLPortal(DarkSectorModel):
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
     Delta1: float = 0.5
-    Delta2: float = 0.5
+    Delta2: Optional[float] = None
     Delta3: Optional[float] = None
-    xi_infl: float = 1.0
+    xi_ini: float = 1.0
 
     def __post_init__(self):
+        if self.Delta2 is None:
+            self.Delta2 = VectorPortal._Delta2_exact(self.mX / self.mY)
         if self.Delta3 is None:
             self.Delta3 = VectorPortal._Delta3_exact(self.mX / self.mY)
 
@@ -444,7 +470,7 @@ class BLPortal(DarkSectorModel):
             self.mX, self.mY, self.alphaX, TD)
 
     def sigmav_XX_to_YY_swave(self) -> float:
-        return VectorPortal._sigmav_XX_to_YY_swave(self.mX, self.alphaX)
+        return VectorPortal._sigmav_XX_to_YY_swave(self.mX, self.mY, self.alphaX)
 
     def sigmav2_YYY_to_YY(self, TD: float) -> float:
         return VectorPortal._sigmav2_YYY_to_YY(
@@ -524,13 +550,15 @@ class LiLjPortal(DarkSectorModel):
         U(1)_{L_i - L_j} gauge coupling.
     m_ZLiLj : float
         Mass of the Z_{L_i - L_j} gauge boson (GeV).
-    Delta1, Delta2 : float
-        Phenomenological coefficients for YYY->YY and YXX->XX.
+    Delta1 : float
+        Phenomenological coefficient for YYY->YY.
+    Delta2 : float or None
+        Coefficient for YXX->XX.  If None, exact tree-level result.
     Delta3 : float or None
         Coefficient for YYX->YX.  If None, exact tree-level result.
     """
     mX: float = 100.0
-    mY: float = 10.0
+    mY: float = 30.0
     gX: int   = 2
     gY: int   = 3
     alphaX: float = 1e-2
@@ -540,14 +568,16 @@ class LiLjPortal(DarkSectorModel):
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
     Delta1: float = 0.5
-    Delta2: float = 0.5
+    Delta2: Optional[float] = None
     Delta3: Optional[float] = None
-    xi_infl: float = 1.0
+    xi_ini: float = 1.0
 
     def __post_init__(self):
         if self.flavor not in _VALID_FLAVORS:
             raise ValueError(
                 f"flavor must be one of {_VALID_FLAVORS}, got '{self.flavor}'")
+        if self.Delta2 is None:
+            self.Delta2 = VectorPortal._Delta2_exact(self.mX / self.mY)
         if self.Delta3 is None:
             self.Delta3 = VectorPortal._Delta3_exact(self.mX / self.mY)
         self._fermion_table = LILJ_FERMIONS[self.flavor]
@@ -579,7 +609,7 @@ class LiLjPortal(DarkSectorModel):
             self.mX, self.mY, self.alphaX, TD)
 
     def sigmav_XX_to_YY_swave(self) -> float:
-        return VectorPortal._sigmav_XX_to_YY_swave(self.mX, self.alphaX)
+        return VectorPortal._sigmav_XX_to_YY_swave(self.mX, self.mY, self.alphaX)
 
     def sigmav2_YYY_to_YY(self, TD: float) -> float:
         return VectorPortal._sigmav2_YYY_to_YY(
@@ -660,13 +690,15 @@ class BaryonPortal(DarkSectorModel):
         U(1)_B gauge coupling.
     m_ZB : float
         Mass of the Z_B gauge boson (GeV).
-    Delta1, Delta2 : float
-        Phenomenological coefficients for YYY->YY and YXX->XX.
+    Delta1 : float
+        Phenomenological coefficient for YYY->YY.
+    Delta2 : float or None
+        Coefficient for YXX->XX.  If None, exact tree-level result.
     Delta3 : float or None
         Coefficient for YYX->YX.  If None, exact tree-level result.
     """
     mX: float = 100.0
-    mY: float = 10.0
+    mY: float = 30.0
     gX: int   = 2
     gY: int   = 3
     alphaX: float = 1e-2
@@ -675,11 +707,13 @@ class BaryonPortal(DarkSectorModel):
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
     Delta1: float = 0.5
-    Delta2: float = 0.5
+    Delta2: Optional[float] = None
     Delta3: Optional[float] = None
-    xi_infl: float = 1.0
+    xi_ini: float = 1.0
 
     def __post_init__(self):
+        if self.Delta2 is None:
+            self.Delta2 = VectorPortal._Delta2_exact(self.mX / self.mY)
         if self.Delta3 is None:
             self.Delta3 = VectorPortal._Delta3_exact(self.mX / self.mY)
 
@@ -709,7 +743,7 @@ class BaryonPortal(DarkSectorModel):
             self.mX, self.mY, self.alphaX, TD)
 
     def sigmav_XX_to_YY_swave(self) -> float:
-        return VectorPortal._sigmav_XX_to_YY_swave(self.mX, self.alphaX)
+        return VectorPortal._sigmav_XX_to_YY_swave(self.mX, self.mY, self.alphaX)
 
     def sigmav2_YYY_to_YY(self, TD: float) -> float:
         return VectorPortal._sigmav2_YYY_to_YY(
@@ -780,8 +814,9 @@ class HiggsPortal(DarkSectorModel):
     """
     Secluded dark sector coupled to the SM via Higgs-portal mixing.
 
+    DM is a Majorana fermion (gX=2, no antiparticle doubling).
     The mediator phi is a real scalar that mixes with the SM Higgs
-    through the mixing angle eps (small-angle limit: sin(eps) ~ eps).
+    through the mixing angle theta, with eps = sin(theta).
 
     Parameters
     ----------
@@ -795,26 +830,28 @@ class HiggsPortal(DarkSectorModel):
         Scalar and pseudo-scalar couplings (specify both, or use lam).
     include_antiparticlesX, include_antiparticlesY : bool
         Whether to double-count for Xbar or Ybar.
-    Delta1, Delta3 : float
-        Multiplicative rescaling of YYY->YY and YYX->YX cannibal rates.
-        Set to 0 to turn off a channel; default 1.0 (no rescaling).
-    xi_infl : float
+    Delta1, Delta2, Delta3 : float or None
+        Dimensionless coefficients for YYY->YY, YXX->XX, and YYX->YX,
+        defined via sigmav2 = Delta_i * lam_s^3 * lam_p^3 / mX^5.
+        If None (default), the exact tree-level result is computed.
+    xi_ini : float
         Initial dark-to-SM temperature ratio.
     hh_coupling : str
         Coupling scheme for phi->hh: 'singlet' or 'zero'.
     """
     mX: float = 100.0
-    mY: float = 10.0
-    gX: int   = 2       # Dirac fermion DM
+    mY: float = 30.0
+    gX: int   = 2       # Majorana fermion DM
     gY: int   = 1       # real scalar mediator
     lam: Optional[float] = 1e-2
     lam_s: Optional[float] = None
     lam_p: Optional[float] = None
-    include_antiparticlesX: bool = True
+    include_antiparticlesX: bool = False
     include_antiparticlesY: bool = False
-    Delta1: float = 1.0
-    Delta3: float = 1.0
-    xi_infl: float = 1.0
+    Delta1: Optional[float] = None
+    Delta2: Optional[float] = None
+    Delta3: Optional[float] = None
+    xi_ini: float = 1.0
     hh_coupling: str = 'singlet'
 
     def __post_init__(self):
@@ -830,6 +867,15 @@ class HiggsPortal(DarkSectorModel):
             if self.lam_s is None or self.lam_p is None:
                 raise ValueError(
                     "Must specify either 'lam' or both 'lam_s' and 'lam_p'.")
+
+        # --- Auto-compute exact Deltas ---
+        r = self.mX / self.mY
+        if self.Delta1 is None:
+            self.Delta1 = self._Delta1_exact(r, self.lam_s, self.lam_p)
+        if self.Delta2 is None:
+            self.Delta2 = self._Delta2_exact(r, self.lam_s, self.lam_p)
+        if self.Delta3 is None:
+            self.Delta3 = self._Delta3_exact(r, self.lam_s, self.lam_p)
 
         # --- Ensure HDECAY is ready ---
         from .phi_decay import ensure_hdecay_ready
@@ -848,15 +894,13 @@ class HiggsPortal(DarkSectorModel):
             self.mX, self.mY, self.lam_s, self.lam_p)
 
     def sigmav2_YYY_to_YY(self, TD: float) -> float:
-        return self.Delta1 * self._sigmav2_YYY_to_YY(
-            self.mX, self.mY, self.lam_s, self.lam_p)
+        return self.Delta1 * self.lam_s**5 * self.lam_p**5 / self.mX**5
 
     def sigmav2_YXX_to_XX(self) -> float:
-        return 0.0   # subdominant, no simplified form available
+        return self.Delta2 * self.lam_s**3 * self.lam_p**3 / self.mX**5
 
     def sigmav2_YYX_to_YX(self) -> float:
-        return self.Delta3 * self._sigmav2_YYX_to_YX(
-            self.mX, self.mY, self.lam_s, self.lam_p)
+        return self.Delta3 * self.lam_s**3 * self.lam_p**3 / self.mX**5
 
     def decay_width_to_SM(self, epsX: float) -> float:
         from .phi_decay import phi_total_width_normalised
@@ -879,14 +923,14 @@ class HiggsPortal(DarkSectorModel):
              + 2.0 * (-2.0*r**6 + 10.0*r**4 - 17.0*r**2 + 9.0) * lam_s**4
              ) / (12.0 * mX**2 * np.pi * np.sqrt(1.0 - r**2) * (r**2 - 2.0)**4)
         if xX < 1.0:
-            return 2.0 * a
-        return 2.0 * a + 6.0 * b / xX
+            return a
+        return a + 6.0 * b / xX
 
     @staticmethod
     def _sigmav_XX_to_YY_swave(mX, mY, lam_s, lam_p):
-        """s-wave-only <sigma v> for X Xbar -> phi phi."""
+        """s-wave-only <sigma v> for chi chi -> phi phi (Majorana convention)."""
         r = mY / mX
-        return (4.0 * np.sqrt(1.0 - r**2) * lam_p**2 * lam_s**2
+        return (2.0 * np.sqrt(1.0 - r**2) * lam_p**2 * lam_s**2
                 ) / (mX**2 * np.pi * (r**2 - 2.0)**2)
 
     @staticmethod
@@ -899,20 +943,49 @@ class HiggsPortal(DarkSectorModel):
                 / (mX**2 * mY**3))
 
     @staticmethod
-    def _sigmav2_YYX_to_YX(mX, mY, lam_s, lam_p):
-        """<sigma^2 v^2> for phi phi X -> phi X."""
-        r = mX / mY
-        Fac = (9.0 * r**5 * np.sqrt(12.0*r*(r + 2.0) + 9.0) * (
-            3.0*lam_p**6 * (1.0 - 2.0*r*(r + 1.0))**2
-            + lam_p**4 * lam_s**2 * (2.0*r + 1.0) * (
-                2.0*r*(2.0*r*(r*(r*(2.0*r*(16.0*r*(r + 5.0) + 149.0)
-                + 271.0) + 142.0) + 40.0) - 5.0) + 9.0)
-            + lam_s**4 * (4.0*r*(r*(4.0*r*(2.0*r*(2.0*r + 9.0) + 25.0)
-                + 45.0) + 4.0) + 9.0) * (lam_p*(2.0*r + 1.0))**2
-            + lam_s**6 * (2.0*r + 1.0)**5 * (2.0*r + 3.0)
-            )) / (64.0 * np.pi * (r + 2.0)**3 * (2.0*r + 1.0)**4
-                  * (2.0*r**2*(r + 2.0) + r - 1.0)**2)
-        return Fac / mX**5
+    def _Delta1_exact(r, lam_s, lam_p):
+        """Exact tree-level Delta1 for phi phi phi -> phi phi.
+
+        sigmav2 = Delta1 * lam_s^5 * lam_p^5 / mX^5.
+        """
+        rho = lam_p / lam_s
+        # (3 lams^4 + 10 lams^2 lamp^2 + 15 lamp^4)^2 / (lams^5 lamp^5)
+        #  = lams^3/lamp^5 * (3 + 10 rho^2 + 15 rho^4)^2
+        return (np.sqrt(5.0) / (3.0 * np.pi**5)
+                * r**3 * (3 + 10*rho**2 + 15*rho**4)**2 / rho**3)
+
+    @staticmethod
+    def _Delta3_exact(r, lam_s, lam_p):
+        """Exact tree-level Delta3 for phi phi X -> phi X.
+
+        sigmav2 = Delta3 * lam_s^3 * lam_p^3 / mX^5.
+        """
+        rho = lam_p / lam_s
+        return (9.0 * np.sqrt(3.0) * r**5 * np.sqrt(3 + 8*r + 4*r**2) * (
+            (1 + 2*r)**5 * (3 + 2*r)
+            + (9 + 16*r + 180*r**2 + 400*r**3 + 288*r**4
+               + 64*r**5) * (1 + 2*r)**2 * rho**2
+            + (9 + 8*r + 140*r**2 + 888*r**3 + 2220*r**4
+               + 3360*r**5 + 3024*r**6 + 1408*r**7 + 256*r**8) * rho**4
+            + 3 * (-1 + 2*r + 2*r**2)**2 * rho**6
+            )) / (64.0 * np.pi * (2 + r)**3 * (1 + 2*r)**4
+                  * (2*r**3 + 4*r**2 + r - 1)**2)
+
+    @staticmethod
+    def _Delta2_exact(r, lam_s, lam_p):
+        """Exact tree-level Delta2 for phi X X -> X X.
+
+        sigmav2 = Delta2 * lam_s^3 * lam_p^3 / mX^5.
+        """
+        rho = lam_p / lam_s
+        return (r**3 * np.sqrt(1 + 4*r) * (
+            (1 + rho**2)**3 + 8*r*(1 + rho**2)**3
+            + 4*r**2 * (2 + 21*rho**2 + 20*rho**4 + rho**6)
+            - 16*r**3 * (4 - 7*rho**2 - 6*rho**4 + 5*rho**6)
+            - 16*r**4 * (7 - 6*rho**2 - 25*rho**4 + 4*rho**6)
+            + 128*r**5 * (1 + 9*rho**2 + 14*rho**4 + 2*rho**6)
+            + 256*r**6 * (1 + 2*rho**2)**2
+            )) / (64.0 * np.pi * (1 + 2*r)**3 * (-1 + r + 2*r**2)**2)
 
     def branching_ratios_to_SM(self) -> dict:
         from .phi_decay import phi_branching_ratios

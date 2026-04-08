@@ -42,7 +42,7 @@ model = VectorPortal(
 
 # 3) Create the solver and run
 solver = BoltzmannSolver(cosmo, model)
-sol0 = solver.solve_boltzmann_chempot(return_bg_ICs=True, verbose=True,Gamma_switch_threshold=1e6, n_points=500)
+sol0 = solver.solve_boltzmann_chempot_2phase(return_bg_ICs=True, verbose=True,Gamma_switch_threshold=1e6, n_points=500)
 
 epsX = solver.find_epsilon_DMRelic(sol0['bg_ICs'])
 

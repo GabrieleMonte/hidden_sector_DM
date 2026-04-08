@@ -47,7 +47,7 @@ print(f"mXstar = {res['mXstar']:.4e} GeV")
 
 ### Finding portal coupling constraints
 
-Once the secluded-sector evolution is solved, the portal coupling `eps` can be determined from three independent constraints:
+Once the secluded-sector evolution is solved, the portal coupling `eps` can be determined from several independent constraints:
 
 ```python
 # 1. Relic abundance: eps that gives Omega_DM h^2 = 0.12
@@ -59,11 +59,16 @@ eps_bbn = solver.find_epsilon_BBN_hadronic(sol['YY_final'])
 # 3. Direct detection: eps that saturates a SI cross-section limit
 eps_LZ = solver.find_epsilon_DD(constraint='LZ')          # LZ 90% CL
 eps_nu = solver.find_epsilon_DD(constraint='nufloor_Xe')   # Xe neutrino floor
+
+# 4. Thermalization floor: minimum eps to keep dark sector in equilibrium with SM
+eps_therm = solver.find_epsilon_thermal_floor()             # default x_FO = 20
 ```
 
 The BBN constraint uses 2D log-log interpolation over the Kawasaki, Kohri, Moroi & Takaesu (2017) upper bounds on `m_Y * Y_Y` as a function of lifetime, combining `uu` and `bb` injection channels weighted by the model's branching ratios.
 
 The direct detection constraint root-finds the `eps` for which `model.sigma_SI(eps)` equals the experimental limit at the given `mX`. Limit curves (LZ and Xe neutrino floor) are loaded as log-log interpolators from tabulated data. Returns `np.inf` for models with no tree-level SI cross section (e.g. `LiLjPortal`), and `np.nan` if `mX` is outside the data range.
+
+The thermalization floor estimates the minimum `eps` such that Y decay/inverse-decay keeps the dark and SM sectors in thermal contact at freeze-out, requiring `Gamma(Y -> SM) >= H(T_FO)` (Sec. 3.1.2 of [arXiv:2509.08043](https://arxiv.org/abs/2509.08043)). Since `Gamma ~ eps^2`, this gives `eps = sqrt(H_FO / Gamma(eps=1))` analytically. This is an approximate lower bound that may underestimate the true thermalization coupling for very light mediators (`mY < 0.1 mX`).
 
 For the `BLPortal`, `BaryonPortal`, and `LiLjPortal`, the gauge couplings (`g_BL`, `g_B`, `g_LiLj`) default to 1, so `eps` directly represents the effective portal coupling product `eps * g`.
 
