@@ -9,6 +9,21 @@ output/
 push.sh
 references/
 
+# docs/: only publish the compiled PDF
+docs/*
+!docs/hidden_sector_DM_toolkit.pdf
+
+# figs/: only publish the selected result figures
+figs/*
+!figs/branching_ratios_pie.pdf
+!figs/rates_hP_check_v0.pdf
+!figs/rates_vP_check_v0.pdf
+!figs/vP_aX1e-3_1e-2_r2_5.pdf
+!figs/vP_aX5e-4_5e-3_r2_5.pdf
+
+# Legacy package code
+hidden_sector_DM/_legacy/
+
 # Legacy notebooks
 notebooks/legacy*.ipynb
 
