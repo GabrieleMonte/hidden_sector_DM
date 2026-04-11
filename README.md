@@ -1,4 +1,4 @@
-# Hidden sector Dark Matter
+# Hidden Sector Dark Matter
 
 Toolkit for computing the relic abundance of hidden-sector dark matter, where the DM particle $X$ annihilates into unstable mediators $Y$ that subsequently decay to the Standard Model through a small portal coupling $\varepsilon$. The defining hierarchy is $\alpha_X \gg \varepsilon^2$: hidden-sector freeze-out is controlled by the dark coupling, while $\varepsilon$ only sets the mediator lifetime and hence the late-time entropy dilution.
 
