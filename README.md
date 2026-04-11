@@ -4,7 +4,7 @@ Toolkit for computing the relic abundance of hidden-sector dark matter, where th
 
 The code solves the coupled Boltzmann equations for the DM yield $Y_X$, the mediator yield $Y_Y$, and the dark-to-SM temperature ratio $\xi = T_h / T_{\rm SM}$, using a three-phase strategy that exploits the natural hierarchy of freeze-out timescales:
 1. **Phase 1 (equilibrium)** — both $X$ and $Y$ track their equilibrium abundances; only $\ln\xi$ evolves.
-2. **Phase 1.5 (QSSA)** — $X$ departs from equilibrium while cannibal reactions ($3\to2$) keep $Y$ in chemical equilibrium ($\bar\mu_Y = 0$); solver evolves $(\ln\xi,\bar\mu_X)$.
+2. **Phase 1.5 (mediator-in-equilibrium)** — $X$ departs from equilibrium while cannibal reactions ($3\to2$) keep $Y$ pinned at its equilibrium abundance ($\bar\mu_Y = 0$); solver evolves $(\ln\xi,\bar\mu_X)$.
 3. **Phase 2 (full)** — cannibal processes decouple and the full three-variable system $(\ln\xi,\bar\mu_X,\bar\mu_Y)$ is integrated to freeze-out.
 
 Once the Boltzmann system has converged, a separate background solver evolves the mediator decay $Y\to\text{SM}$ in $e$-folds, tracking entropy injection and the resulting dilution of the DM yield.
