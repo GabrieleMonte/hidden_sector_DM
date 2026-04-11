@@ -1,6 +1,6 @@
 # Hidden Sector Dark Matter
 
-Toolkit for computing the relic abundance of hidden-sector dark matter, where the DM particle $X$ annihilates into unstable mediators $Y$ that subsequently decay to the Standard Model through a small portal coupling $\varepsilon$. The defining hierarchy is $\alpha_X \gg \varepsilon^2$: hidden-sector freeze-out is controlled by the dark coupling, while $\varepsilon$ only sets the mediator lifetime and hence the late-time entropy dilution.
+Toolkit for computing the relic abundance of hidden-sector dark matter, where the DM particle $X$ annihilates into unstable mediators $Y$ that subsequently decay to the Standard Model through a small portal coupling $\varepsilon$. The defining hierarchy is $g_D \gg \varepsilon^2$, such that the hidden-sector freeze-out is controlled by the dark coupling $g_D$, while $\varepsilon$ only sets the mediator lifetime and hence the late-time entropy dilution.
 
 The code solves the coupled Boltzmann equations for the DM yield $Y_X$, the mediator yield $Y_Y$, and the dark-to-SM temperature ratio $\xi = T_h / T_{\rm SM}$, using a three-phase strategy that exploits the natural hierarchy of freeze-out timescales:
 1. **Phase 1 (equilibrium)** — both $X$ and $Y$ track their equilibrium abundances; only $\ln\xi$ evolves.
