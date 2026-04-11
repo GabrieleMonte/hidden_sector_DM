@@ -17,13 +17,14 @@
 \definecolor{darkgreen}{rgb}{0.075,0.302,0.047}
 \definecolor{dullred}{rgb}{0.706,0.208,0.192}
 \definecolor{dullblue}{rgb}{0.000,0.298,0.490}
+\definecolor{romared}{RGB}{142,0,28}
 \RequirePackage[colorlinks=true
-,urlcolor=dullblue
-,anchorcolor=blue
-,citecolor=dullblue
-,filecolor=blue
-,linkcolor=darkgreen
-,menucolor=blue
+,urlcolor=romared
+,anchorcolor=romared
+,citecolor=romared
+,filecolor=romared
+,linkcolor=romared
+,menucolor=romared
 %,pagecolor=blue
 ,linktocpage=true
 ,pdfproducer=medialab
@@ -155,7 +156,7 @@
 %\if!\@proceeding!\else\noindent{\sc\@proceeding}\fi
 %\afterProceedingsSpace
 % Title 
-{{\huge \flushleft\bfseries\@title\par} }
+{{\huge \flushleft\bfseries\sffamily\@title\par} }
 \afterTitleSpace
 % Collaboration
 \if!\@collaboration!\else

@@ -7,3 +7,18 @@ __pycache__/
 output/
 .idea/
 push.sh
+references/
+
+# Legacy notebooks
+notebooks/legacy*.ipynb
+
+# Mathematica: old (non-v2) versions
+mathematica/MsqTerms_YXX_XX_hP/
+mathematica/MsqTerms_YXX_XX_vP/
+mathematica/MsqTerms_YYX_YX_hP/
+mathematica/MsqTerms_YYX_YX_vP/
+mathematica/XX_YY_hP_and_vP.nb
+mathematica/YXX_XX_hP.nb
+mathematica/YXX_XX_vP.nb
+mathematica/YYX_YX_hP.nb
+mathematica/YYX_YX_vP.nb
