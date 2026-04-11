@@ -117,3 +117,7 @@ docs/
 - NumPy, SciPy, tqdm
 - [2HDECAY](https://github.com/marcel-krause/2HDECAY) (bundled in `hidden_sector_DM/phi_decay/` for HiggsPortal above 5 GeV)
 - [scalar_portal](https://github.com/JLTastet/scalar_portal) (for HiggsPortal below 5 GeV)
+
+## AI Disclosure
+
+The preparation of this public repository was aided by Claude (Anthropic). Specifically, AI assistance was used to organize the directory structure for public release, add descriptive comments and markdown sections to the notebooks, and produce an initial draft of this README. All AI-generated content was reviewed and verified by the authors.
