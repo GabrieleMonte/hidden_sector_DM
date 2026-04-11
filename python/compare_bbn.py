@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 
 plt.style.use('/home/gab/Desktop/PyCharm_env/mine.mplstyle')
 
-from source import Cosmology, BoltzmannSolver
-from source.model import VectorPortal
+from hidden_sector_DM import Cosmology, BoltzmannSolver
+from hidden_sector_DM.model import VectorPortal
 
 hbar = 6.582119514e-25  # GeV*s
 
@@ -106,7 +106,7 @@ eps_arr = np.logspace(-16, -8, 300)
 tau_arr = hbar / np.array([model.decay_width_to_SM(e) for e in eps_arr])
 
 # For hadronic method: compute mY_bound(tau) for each eps
-from source.bbn import mY_bound_model
+from hidden_sector_DM.bbn import mY_bound_model
 mY_YY = mY * YY_frozen
 bounds_had = np.array([mY_bound_model(mY, t, br) for t in tau_arr])
 # ratio: mY*YY / bound.  >1 means excluded

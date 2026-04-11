@@ -1,9 +1,9 @@
 """
-SecludedDM.py — backward-compatible convenience wrapper.
+HiddenSectorDM.py — backward-compatible convenience wrapper.
 
 Re-exports the public API so that existing scripts can do::
 
-    from source.SecludedDM import Cosmology, VectorPortal, BoltzmannSolver, ...
+    from hidden_sector_DM.HiddenSectorDM import Cosmology, VectorPortal, BoltzmannSolver, ...
 
 without knowing the internal module layout.
 """
@@ -21,5 +21,5 @@ from .constants import (
 
 # --- Core classes ---
 from .cosmology import Cosmology
-from .model import DarkSectorModel, VectorPortal, BLPortal, LiLjPortal, BaryonPortal, HiggsPortal
+from .model import HiddenSectorModel, VectorPortal, BLPortal, LiLjPortal, BaryonPortal, HiggsPortal
 from .solver import BoltzmannSolver, find_mXstar

@@ -20,7 +20,7 @@ from pathlib import Path
 # add main_directory/ to the import path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from source.SecludedDM import Cosmology, VectorPortal, BoltzmannSolver
+from hidden_sector_DM.HiddenSectorDM import Cosmology, VectorPortal, BoltzmannSolver
 
 plt.style.use('/home/gab/Desktop/PyCharm_env/mine.mplstyle')
 plt.rcParams["axes.axisbelow"] = False
@@ -30,7 +30,7 @@ plt.rcParams["axes.axisbelow"] = False
 # 1) Initialise the SM background (point gstar_dir to wherever std.tab lives)
 cosmo = Cosmology(gstar_choice="standard", gstarpath="./")
 
-# 2) Build the dark-sector model
+# 2) Build the hidden-sector model
 model = VectorPortal(
     mX=5e1,       # 50 GeV DM
     mY=2e1,       # 20 GeV mediator

@@ -1,12 +1,12 @@
 """
-Dark-sector model interface and concrete implementations.
+Hidden-sector model interface and concrete implementations.
 
-DarkSectorModel : abstract base class defining the rate interface
-VectorPortal    : secluded dark sector with kinetic mixing (hypercharge)
-BLPortal        : secluded dark sector with kinetic mixing (B-L)
-LiLjPortal      : secluded dark sector with kinetic mixing (Li-Lj)
-BaryonPortal    : secluded dark sector with kinetic mixing (baryon number)
-HiggsPortal     : secluded dark sector with scalar mixing
+HiddenSectorModel : abstract base class defining the rate interface
+VectorPortal    : hidden sector with kinetic mixing (hypercharge)
+BLPortal        : hidden sector with kinetic mixing (B-L)
+LiLjPortal      : hidden sector with kinetic mixing (Li-Lj)
+BaryonPortal    : hidden sector with kinetic mixing (baryon number)
+HiggsPortal     : hidden sector with scalar mixing
 """
 
 import numpy as np
@@ -30,9 +30,9 @@ _A_Xe, _Z_Xe = 131, 54           # Xenon-131 (LZ / XENON default)
 #  Abstract base
 # =====================================================================
 
-class DarkSectorModel(ABC):
+class HiddenSectorModel(ABC):
     """
-    Interface that any secluded dark-sector model must implement.
+    Interface that any hidden-sector model must implement.
 
     The BoltzmannSolver reads masses, DOF, and rate methods from this
     interface — all model-specific physics lives here.
@@ -119,9 +119,9 @@ _PAIR_NAME = {
 # =====================================================================
 
 @dataclass
-class VectorPortal(DarkSectorModel):
+class VectorPortal(HiddenSectorModel):
     """
-    Secluded dark sector coupled to the SM via kinetic mixing.
+    Hidden sector coupled to the SM via kinetic mixing.
 
     Provides Z'-fermion couplings, decay widths, and all cross
     sections needed by the BoltzmannSolver.
@@ -204,7 +204,7 @@ class VectorPortal(DarkSectorModel):
         )
 
     # ----------------------------------------------------------
-    #  DarkSectorModel interface
+    #  HiddenSectorModel interface
     # ----------------------------------------------------------
 
     def sigmav_XX_to_YY(self, TD: float) -> float:
@@ -379,16 +379,16 @@ class VectorPortal(DarkSectorModel):
 # =====================================================================
 
 @dataclass
-class BLPortal(DarkSectorModel):
+class BLPortal(HiddenSectorModel):
     """
-    Secluded dark sector coupled to the SM via B-L kinetic mixing.
+    Hidden sector coupled to the SM via B-L kinetic mixing.
 
     The hidden-sector Z' mixes kinetically with the U(1)_{B-L} gauge
     boson Z_{B-L}.  After restoring canonical kinetic terms the Z'
     acquires purely vectorial couplings to SM fermions proportional
     to their (B-L) charge (Eq. 8 of arXiv:1912.08821).
 
-    Dark-sector cross sections (XX->YY, 3->2 cannibal) are identical
+    Hidden-sector cross sections (XX->YY, 3->2 cannibal) are identical
     to the VectorPortal — only the decay Z'->SM changes.
 
     Parameters
@@ -462,7 +462,7 @@ class BLPortal(DarkSectorModel):
                 * gfV**2 * (1.0 + 0.5 * r2))
 
     # ----------------------------------------------------------
-    #  DarkSectorModel interface
+    #  HiddenSectorModel interface
     # ----------------------------------------------------------
 
     def sigmav_XX_to_YY(self, TD: float) -> float:
@@ -528,9 +528,9 @@ class BLPortal(DarkSectorModel):
 _VALID_FLAVORS = ("e-mu", "mu-tau", "e-tau")
 
 @dataclass
-class LiLjPortal(DarkSectorModel):
+class LiLjPortal(HiddenSectorModel):
     """
-    Secluded dark sector coupled to the SM via L_i - L_j kinetic mixing.
+    Hidden sector coupled to the SM via L_i - L_j kinetic mixing.
 
     The hidden-sector Z' mixes kinetically with the gauge boson of a
     U(1)_{L_i - L_j} symmetry.  The Z' acquires purely vectorial couplings
@@ -601,7 +601,7 @@ class LiLjPortal(DarkSectorModel):
         return gfV, 0.0
 
     # ----------------------------------------------------------
-    #  DarkSectorModel interface
+    #  HiddenSectorModel interface
     # ----------------------------------------------------------
 
     def sigmav_XX_to_YY(self, TD: float) -> float:
@@ -671,9 +671,9 @@ class LiLjPortal(DarkSectorModel):
 # =====================================================================
 
 @dataclass
-class BaryonPortal(DarkSectorModel):
+class BaryonPortal(HiddenSectorModel):
     """
-    Secluded dark sector coupled to the SM via baryon-number kinetic mixing.
+    Hidden sector coupled to the SM via baryon-number kinetic mixing.
 
     The hidden-sector Z' mixes kinetically with the gauge boson of a
     U(1)_B symmetry.  The Z' acquires purely vectorial couplings to
@@ -735,7 +735,7 @@ class BaryonPortal(DarkSectorModel):
         return gfV, 0.0
 
     # ----------------------------------------------------------
-    #  DarkSectorModel interface
+    #  HiddenSectorModel interface
     # ----------------------------------------------------------
 
     def sigmav_XX_to_YY(self, TD: float) -> float:
@@ -810,9 +810,9 @@ class BaryonPortal(DarkSectorModel):
 # =====================================================================
 
 @dataclass
-class HiggsPortal(DarkSectorModel):
+class HiggsPortal(HiddenSectorModel):
     """
-    Secluded dark sector coupled to the SM via Higgs-portal mixing.
+    Hidden sector coupled to the SM via Higgs-portal mixing.
 
     DM is a Majorana fermion (gX=2, no antiparticle doubling).
     The mediator phi is a real scalar that mixes with the SM Higgs
@@ -882,7 +882,7 @@ class HiggsPortal(DarkSectorModel):
         ensure_hdecay_ready()
 
     # ----------------------------------------------------------
-    #  DarkSectorModel interface
+    #  HiddenSectorModel interface
     # ----------------------------------------------------------
 
     def sigmav_XX_to_YY(self, TD: float) -> float:

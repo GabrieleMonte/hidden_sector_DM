@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path.cwd().parent
 sys.path.insert(0, str(ROOT))
-from source.SecludedDM import Cosmology, BaryonPortal, BoltzmannSolver, find_mXstar
+from hidden_sector_DM.HiddenSectorDM import Cosmology, BaryonPortal, BoltzmannSolver, find_mXstar
 
 cosmo = Cosmology(gstar_choice="standard", gstarpath="./")
 

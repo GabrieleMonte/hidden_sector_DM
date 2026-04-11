@@ -13,7 +13,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 plt.style.use('/home/gab/Desktop/PyCharm_env/mine.mplstyle')
 
-from source.model import VectorPortal, BLPortal, LiLjPortal, BaryonPortal, HiggsPortal
+from hidden_sector_DM.model import VectorPortal, BLPortal, LiLjPortal, BaryonPortal, HiggsPortal
 
 # ── Parameters ──────────────────────────────────────────────────────
 mY = 50.0   # mediator mass [GeV]

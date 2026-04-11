@@ -1,7 +1,7 @@
 """
 BoltzmannSolver — model-independent Boltzmann equation machinery.
 
-All dark-sector rates are read from a DarkSectorModel instance.
+All hidden-sector rates are read from a HiddenSectorModel instance.
 """
 
 import numpy as np
@@ -14,22 +14,22 @@ from tqdm import tqdm
 
 from .constants import Mpl, rhoc, s0_cosmo, Och2, mY_relic
 from .cosmology import Cosmology
-from .model import DarkSectorModel
+from .model import HiddenSectorModel
 
 
 class BoltzmannSolver:
     """
-    Model-independent Boltzmann solver for secluded dark sectors.
+    Model-independent Boltzmann solver for hidden sectors.
 
     Parameters
     ----------
     cosmo : Cosmology
         Shared SM-background instance.
-    model : DarkSectorModel
-        Dark-sector model providing masses, DOF, and rate methods.
+    model : HiddenSectorModel
+        Hidden-sector model providing masses, DOF, and rate methods.
     """
 
-    def __init__(self, cosmo: Cosmology, model: DarkSectorModel):
+    def __init__(self, cosmo: Cosmology, model: HiddenSectorModel):
         self.cosmo = cosmo
         self.model = model
 
@@ -51,6 +51,7 @@ class BoltzmannSolver:
         Tinf: float = 1e14,
         return_bg_ICs: bool = False,
         verbose: bool = True,
+        epsX_decay: float = 0.0,
     ) -> Dict[str, Any]:
         """
         Three-phase QSSA Boltzmann solver using chemical-potential variables.
@@ -58,6 +59,17 @@ class BoltzmannSolver:
         Phase 1   : equilibrium (muX=muY=0, evolve ln xi only)
         Phase 1.5 : QSSA / Y-in-eq (muY=0, evolve ln xi & muX)
         Phase 2   : full system (evolve ln xi, muX, muY)
+
+        The solver treats Y as stable by default (epsX_decay=0), following
+        the two-stage philosophy in which the portal coupling enters only
+        through the late-time background evolution.  The optional
+        parameter epsX_decay > 0 enables a "joint" mode in which the
+        mediator decay Y -> SM is included directly in the Boltzmann
+        equations of Phase 2 via the standard number- and energy-drain
+        terms (additions to the C and E coefficients).  This mode is
+        intended for verification and diagnostics -- it allows comparing
+        the post-hoc `correct_Y_decay` treatment against a self-consistent
+        joint evolution.  Normal usage should leave epsX_decay=0.
         """
         cosmo = self.cosmo
         model = self.model
@@ -95,6 +107,9 @@ class BoltzmannSolver:
 
         sv_YXX_XX = model.sigmav2_YXX_to_XX() * ann_sym   # 1/2 for Dirac (XX in initial state)
         sv_YYX_YX = model.sigmav2_YYX_to_YX()
+
+        # Optional Y-decay term in the Boltzmann equation (for verification)
+        GammaY_decay = model.decay_width_to_SM(epsX_decay) if epsX_decay > 0 else 0.0
 
         state = {"x_FO": None, "x_switch_QSSA": None,
                  "x_switch_full": None, "x_converged": None}
@@ -284,6 +299,10 @@ class BoltzmannSolver:
                 one_m = 1.0 - np.exp(-muY)
 
             C = coll_Y_2to2 - Gamma_over_H_can * one_m + (th['lamY'] - 3.0 * g_tilde) / x
+            # Optional Y -> SM decay term (verification mode)
+            # dmuY/dx|_decay = -GammaY * dt/dx = -GammaY * g_tilde / (x * Htot)
+            if GammaY_decay > 0:
+                C -= GammaY_decay * g_tilde / (x * th['Htot'])
             D = -th['lamY']
 
             D_cal  = nX * th['dBX1'] + nY * th['dBY1']
@@ -294,6 +313,10 @@ class BoltzmannSolver:
 
             rho_plus_P = nX * th['BX2'] + nY * th['BY2']
             E = (1.0 / x) * (1.0 - 3.0 * g_tilde * rho_plus_P / Dtilde)
+            # Optional energy-loss term from Y -> SM decay (verification mode)
+            # dE_decay = -(g_tilde/(Htot*x)) * GammaY * B1^Y * n_Y / Dtilde
+            if GammaY_decay > 0:
+                E -= GammaY_decay * g_tilde * th['BY1'] * nY / (x * th['Htot'] * Dtilde)
             F = -th['BX1'] * nX / Dtilde
             G = -th['BY1'] * nY / Dtilde
 
@@ -1801,6 +1824,8 @@ class BoltzmannSolver:
         cosmo = self.cosmo
         model = self.model
         mX, mY = model.mX, model.mY
+        include_antiparticlesX = model.include_antiparticlesX
+        ann_sym_bg = 0.5 if include_antiparticlesX else 1.0
 
         x0  = bg_ICs['x'][-1]
         xi0 = bg_ICs['xi'][-1]
@@ -1811,6 +1836,7 @@ class BoltzmannSolver:
 
         GammaY  = model.decay_width_to_SM(epsX)
 
+        S_ratio_corr = 1.0  # Boltzmann-phase entropy correction (1 if disabled)
         # --- Correct for Y decay missed during Boltzmann evolution ---
         if correct_Y_decay and GammaY > 0:
             x_traj = bg_ICs['x']
@@ -1886,7 +1912,6 @@ class BoltzmannSolver:
             injection = rhoY * GammaY / (max(H, 1e-300) * 3.0 * s * T)
             dlnT_dN   = -1.0 / g_tilde_val * (1.0 - injection)
 
-            ann_sym_bg = 0.5 if include_antiparticlesX else 1.0
             dlnrhoX_dN = -3.0 - sv_XXYY * ann_sym_bg * rhoX / (mX * max(H, 1e-300))
 
             return [dlnT_dN, dlnrhoY_dN, dlnrhoX_dN]
@@ -1935,7 +1960,8 @@ class BoltzmannSolver:
             if verbose:
                 print(f"  YX_final = {YX_final:.6e}")
                 print(f"  SRatio   = {SRatio:.4f}")
-            return {'YX_final': YX_final, 'SRatio': SRatio, 'T_final': Tsol[-1]}
+            return {'YX_final': YX_final, 'SRatio': SRatio, 'T_final': Tsol[-1],
+                    'S_ratio_corr': S_ratio_corr}
 
         else:
             x_pre  = bg_ICs['x']
@@ -2105,7 +2131,7 @@ class BoltzmannSolver:
     # =============================================================
     def find_epsilon_thermal_floor(self, x_FO: float = 20.0) -> float:
         """
-        Minimum portal coupling for the dark sector to remain in thermal
+        Minimum portal coupling for the hidden sector to remain in thermal
         equilibrium with the SM at freeze-out.
 
         Requires Gamma(Y -> SM) >= H(T_FO), where T_FO = mX / x_FO.
@@ -2231,28 +2257,44 @@ def find_mXstar(
     verbose_solver: bool = False,
 ) -> Dict[str, Any]:
     """
-    Find mX* where freeze-out + prompt Y decay yields Och2_target,
-    and optionally the minimum epsX for negligible entropy injection.
+    Find the "plateau" DM mass mX* for a given hidden sector model and
+    mass ratio r = mX/mY, defined as the smallest mass at which the
+    hidden-sector freeze-out reproduces Omega_c h^2 = Och2_target without
+    entropy injection from Y decay.  See Sec. ``Mapping the Portal
+    Coupling'' in the documentation for the physical picture and
+    caveats.
 
     Parameters
     ----------
     cosmo : Cosmology
-    model_factory : callable(mX, mY) -> DarkSectorModel
+    model_factory : callable(mX, mY) -> HiddenSectorModel
         Factory that creates a model instance for given masses.
     r : float
         Mass ratio mX / mY.
+    epsX_ref : float
+        Reference portal coupling used with the post-hoc correction
+        (default 0.1).  Any value in the saturated regime works.
+    find_epsX_min : bool
+        If True, also returns the lower edge of the plateau (epsX_min),
+        i.e. the smallest epsX for which the background entropy ratio
+        is within delta_S of its asymptotic prompt-decay value.
+    delta_S : float
+        Tolerance for the plateau-edge definition (default 0.001).
     solver_method : str
-        Which Boltzmann solver to use: "QSSA", "chempot", "hybrid", or "Yeq".
-    solver_kw : dict
-        Keyword arguments passed to the chosen solver method.
-    verbose : bool
-        Print find_mXstar progress.
-    verbose_solver : bool
-        Also print verbose output from each individual Boltzmann solve.
+        Boltzmann solver: "QSSA"/"3phase" (default), "chempot"/"2phase",
+        "hybrid", or "Yeq".
+    solver_kw, bg_kw : dict, optional
+        Extra kwargs forwarded to the Boltzmann and background solvers.
+        By default bg_kw sets correct_Y_decay=True, which is required
+        for the post-hoc correction.
+    verbose, verbose_solver : bool
+        Progress printing for find_mXstar and individual solves.
     """
     if solver_kw is None:
         solver_kw = {}
-    _bg_kw = dict(stop_on_rhoY=True, verbose=False)
+    # correct_Y_decay=True is essential: at epsX_ref = 0.1 the post-hoc
+    # correction is required to recover the physical plateau value.
+    _bg_kw = dict(stop_on_rhoY=True, verbose=False, correct_Y_decay=True)
     if bg_kw:
         _bg_kw.update(bg_kw)
 

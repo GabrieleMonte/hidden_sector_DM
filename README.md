@@ -1,8 +1,8 @@
-# Secluded Dark Matter
+# Hidden sector Dark Matter
 
-Toolkit for computing the relic abundance of secluded dark matter, where dark matter annihilates into unstable mediators that subsequently decay to the Standard Model through a portal interaction.
+Toolkit for computing the relic abundance of hidden-sector dark matter, where dark matter annihilates into unstable mediators that subsequently decay to the Standard Model through a portal interaction.
 
-The code solves the coupled Boltzmann equations for the dark matter yield and dark sector chemical potential using a three-phase QSSA (quasi-static steady-state approximation) method:
+The code solves the coupled Boltzmann equations for the dark matter yield and hidden sector chemical potential using a three-phase QSSA (quasi-static steady-state approximation) method:
 1. **Phase 1 (equilibrium)** -- both X and Y track their equilibrium abundances
 2. **Phase 1.5 (QSSA)** -- X freezes out while Y is maintained in chemical equilibrium by cannibal processes
 3. **Phase 2 (full)** -- cannibal processes decouple, full coupled ODE system is solved
@@ -19,7 +19,7 @@ Five portal scenarios are implemented:
 | `BaryonPortal` | Dirac fermion | Dark photon (spin-1) | Kinetic mixing with U(1)_B | [arXiv:1912.08821](https://arxiv.org/abs/1912.08821) |
 | `HiggsPortal` | Majorana fermion | Dark scalar (spin-0) | Scalar mixing with SM Higgs | [arXiv:1609.02555](https://arxiv.org/abs/1609.02555) |
 
-All models implement a common `DarkSectorModel` interface providing:
+All models implement a common `HiddenSectorModel` interface providing:
 - 2->2 annihilation cross sections (XX -> YY)
 - 3->2 cannibal cross sections (YYY -> YY, YYX -> YX, YXX -> XX)
 - Mediator decay width to SM final states
@@ -28,7 +28,7 @@ All models implement a common `DarkSectorModel` interface providing:
 ## Usage
 
 ```python
-from source.SecludedDM import Cosmology, VectorPortal, BoltzmannSolver, find_mXstar
+from hidden_sector_DM.HiddenSectorDM import Cosmology, VectorPortal, BoltzmannSolver, find_mXstar
 
 # Set up cosmology and model
 cosmo = Cosmology(gstar_choice="standard", gstarpath="./notebooks/")
@@ -47,7 +47,7 @@ print(f"mXstar = {res['mXstar']:.4e} GeV")
 
 ### Finding portal coupling constraints
 
-Once the secluded-sector evolution is solved, the portal coupling `eps` can be determined from several independent constraints:
+Once the hidden-sector evolution is solved, the portal coupling `eps` can be determined from several independent constraints:
 
 ```python
 # 1. Relic abundance: eps that gives Omega_DM h^2 = 0.12
@@ -60,7 +60,7 @@ eps_bbn = solver.find_epsilon_BBN_hadronic(sol['YY_final'])
 eps_LZ = solver.find_epsilon_DD(constraint='LZ')          # LZ 90% CL
 eps_nu = solver.find_epsilon_DD(constraint='nufloor_Xe')   # Xe neutrino floor
 
-# 4. Thermalization floor: minimum eps to keep dark sector in equilibrium with SM
+# 4. Thermalization floor: minimum eps to keep hidden sector in equilibrium with SM
 eps_therm = solver.find_epsilon_thermal_floor()             # default x_FO = 20
 ```
 
@@ -76,8 +76,8 @@ For the `BLPortal`, `BaryonPortal`, and `LiLjPortal`, the gauge couplings (`g_BL
 
 ```
 source/
-  SecludedDM.py       # Public API (re-exports)
-  model.py            # DarkSectorModel, VectorPortal, BLPortal, LiLjPortal, BaryonPortal, HiggsPortal
+  HiddenSectorDM.py       # Public API (re-exports)
+  model.py            # HiddenSectorModel, VectorPortal, BLPortal, LiLjPortal, BaryonPortal, HiggsPortal
   solver.py           # BoltzmannSolver, find_mXstar, find_epsilon_*
   cosmology.py        # Cosmology (g_star tables, thermodynamics)
   constants.py        # SM parameters, fermion tables
