@@ -137,6 +137,23 @@ docs/
 - [2HDECAY](https://github.com/marcel-krause/2HDECAY) (bundled in `hidden_sector_DM/phi_decay/` for HiggsPortal above 5 GeV)
 - [scalar_portal](https://github.com/JLTastet/scalar_portal) (for HiggsPortal below 5 GeV)
 
+## Citation
+
+If you use this code, please cite:
+
+```bibtex
+@article{Hooper:2026iga,
+    author = "Hooper, Dan and Krnjaic, Gordan and Montefalcone, Gabriele",
+    title = "{WIMP-like Dark Matter Without Thermalization At Freeze-Out}",
+    eprint = "2605.xxxxx",
+    archivePrefix = "arXiv",
+    primaryClass = "hep.ph",
+    reportNumber = "UTWI-16-2026",
+    month = "5",
+    year = "2026"
+}
+```
+
 ## AI Disclosure
 
 The preparation of this public repository was aided by Claude (Anthropic). Specifically, AI assistance was used to organize the directory structure for public release, add descriptive comments and markdown sections to the notebooks, and produce an initial draft of this README. All AI-generated content was reviewed and verified by the authors.
