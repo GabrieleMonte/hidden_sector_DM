@@ -113,8 +113,8 @@ hidden_sector_DM/         # Python package
   data/
     bbn_constraints_decay/  # BBN bound tables (uu, bb channels, reference masses)
     direct_detection_data/  # LZ / XENONnT SI 90% CL, neutrino floors (Xe SI, Ar SI, Xe SD)
-notebooks/
-  letter_vp_figures.ipynb # VectorPortal letter figures
+notebooks/                # Scripts to reproduce the figures of our pre-print
+  letter_vp_figures.ipynb # VectorPortal figures
   bP_figure.ipynb         # BaryonPortal figures
   blP_figure.ipynb        # BLPortal figures
   hP_figure.ipynb         # HiggsPortal figures
