@@ -262,7 +262,7 @@ class VectorPortal(HiddenSectorModel):
         mZp = self.mY
 
         # Z-Z' mixing angle
-        tan2xi = -2.0 * epsX * sW * MZ**2 / (MZ**2 - mZp**2)
+        tan2xi = 2.0 * epsX * sW * MZ**2 / (MZ**2 - mZp**2)
         xi = 0.5 * np.arctan(tan2xi)
         s_xi, c_xi = np.sin(xi), np.cos(xi)
 
@@ -414,7 +414,7 @@ class BLPortal(HiddenSectorModel):
     gY: int   = 3
     alphaX: float = 1e-2
     g_BL: float = 1.0
-    m_ZBL: float = 1000.0
+    m_ZBL: float = 10000.0
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
     Delta1: float = 0.5
@@ -703,7 +703,7 @@ class BaryonPortal(HiddenSectorModel):
     gY: int   = 3
     alphaX: float = 1e-2
     g_B: float = 1.0
-    m_ZB: float = 1000.0
+    m_ZB: float = 10000.0
     include_antiparticlesX: bool = True
     include_antiparticlesY: bool = False
     Delta1: float = 0.5
@@ -922,7 +922,14 @@ class HiggsPortal(HiddenSectorModel):
              + 3.0 * (r**6 - 8.0*r**4 + 20.0*r**2 - 12.0) * lam_s**2 * lam_p**2
              + 2.0 * (-2.0*r**6 + 10.0*r**4 - 17.0*r**2 + 9.0) * lam_s**4
              ) / (12.0 * mX**2 * np.pi * np.sqrt(1.0 - r**2) * (r**2 - 2.0)**4)
-        if xX < 1.0:
+        # NR expansion <v^2> ~ 6/xX is only valid for xX >> 1.  For
+        # lam_s ~ lam_p the p-wave coefficient `b` is comparable to `a`
+        # with opposite sign; below xX ~ a few it can dominate and flip
+        # <sv> negative.  Cap at xX < 3 -- p-wave correction is ~30% at
+        # xX=3, ~5% at xX=20 (freeze-out), so the truncation only
+        # discards in-equilibrium-regime corrections that don't affect
+        # the relic.
+        if xX < 3.0:
             return a
         return a + 6.0 * b / xX
 

@@ -22,4 +22,4 @@ from .constants import (
 # --- Core classes ---
 from .cosmology import Cosmology
 from .model import HiddenSectorModel, VectorPortal, BLPortal, LiLjPortal, BaryonPortal, HiggsPortal
-from .solver import BoltzmannSolver, find_mXstar
+from .solver import BoltzmannSolver, find_mX_DMRelic_joint

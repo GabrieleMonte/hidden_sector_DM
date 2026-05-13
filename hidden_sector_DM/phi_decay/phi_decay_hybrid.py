@@ -47,7 +47,17 @@ _HBAR  = 6.582119514e-25  # hbar [GeV s]
 
 # Regime boundaries
 _M_DISPERSIVE_MAX = 2.0   # switch dispersive -> pQCD Nf=4
-_M_SCALAR_PORTAL_MAX = 5.0  # switch scalar_portal -> HDECAY
+_M_SCALAR_PORTAL_MAX = 5.0  # scalar_portal returns NaN above this
+
+# scalar_portal <-> HDECAY blend window (smooths the ~2x step at mY=5).
+_M_BLEND_LO = 4.0
+_M_BLEND_HI = 5.0
+
+
+def _smoothstep(t):
+    if t <= 0.0: return 0.0
+    if t >= 1.0: return 1.0
+    return t * t * (3.0 - 2.0 * t)
 
 # ---------------------------------------------------------------------------
 #  (1)  Low-mass regime:  scalar_portal  (m_phi < 5 GeV)
@@ -298,8 +308,13 @@ def phi_total_width_normalised(mS, hh_coupling='singlet'):
         return 0.0
 
     # SM-like width (all channels except hh)
-    if mS < _M_SCALAR_PORTAL_MAX:
+    if mS < _M_BLEND_LO:
         w_sm = _scalar_portal_width(mS)
+    elif mS <= _M_BLEND_HI:
+        w_sp = _scalar_portal_width(mS)
+        w_hd = _hdecay_total_width(mS)
+        w = _smoothstep((mS - _M_BLEND_LO) / (_M_BLEND_HI - _M_BLEND_LO))
+        w_sm = (1.0 - w) * w_sp + w * w_hd
     elif mS <= _M_HDECAY_MAX:
         w_sm = _hdecay_total_width(mS)
     else:
