@@ -118,7 +118,7 @@ notebooks/                # Scripts to reproduce the figures of our pre-print
   bP_figure.ipynb         # BaryonPortal figures
   blP_figure.ipynb        # BLPortal figures
   hP_figure.ipynb         # HiggsPortal figures
-python/
+scripts/
   run_relic.py              # Single-point relic-abundance runner
   get_vPDM_bounds_all.py    # VectorPortal parameter scans (joint + secluded stages)
   get_bLPDM_bounds_all.py   # BLPortal parameter scans

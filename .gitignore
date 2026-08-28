@@ -8,6 +8,7 @@ output/
 .idea/
 push.sh
 references/
+CLAUDE.md
 
 # docs/: only publish the compiled PDF
 docs/*
@@ -15,6 +16,10 @@ docs/*
 
 # Figure folders
 figs/
+
+# GCE: active work, kept out of the public release for now
+# (includes the regeneratable Pythia cache GCE/spectra/)
+GCE/
 
 # Legacy and tests folders (anywhere in the tree)
 **/legacy/
