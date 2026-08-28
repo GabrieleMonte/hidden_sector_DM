@@ -19,7 +19,7 @@ figs/
 
 # GCE: active work, kept out of the public release for now
 # (includes the regeneratable Pythia cache GCE/spectra/)
-GCE/
+#GCE/
 
 # Legacy and tests folders (anywhere in the tree)
 **/legacy/
