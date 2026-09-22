@@ -21,6 +21,11 @@ figs/
 # (includes the regeneratable Pythia cache GCE/spectra/)
 #GCE/
 
+# ...but GCE/output/ is tracked: the (mX, mY) grids are small and cost hours of
+# Boltzmann solves to recompute, so they travel with the branch that computes them
+!GCE/output/
+!GCE/output/**
+
 # Legacy and tests folders (anywhere in the tree)
 **/legacy/
 **/legacy_*/
