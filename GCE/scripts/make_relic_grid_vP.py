@@ -67,7 +67,7 @@ from hidden_sector_DM.HiddenSectorDM import (
 # ---- configuration ---------------------------------------------------
 
 OCH2_TARGET  = 0.12
-EPS_JOINT    = (1e-9, 1e-10)             # one joint solve per (node, eps)
+EPS_JOINT    = (1e-9,)                  # 1e-10 piece deferred; restore (1e-9, 1e-10) to run it
 EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three
 
 MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
@@ -76,7 +76,7 @@ RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv 
 N_MX, N_RV, N_ALPHAX = 46, 34, 8         # coarse (mX, rv) mesh; alpha_X per node
 ALPHAX_LIM = (2e-5, 2e-2)
 
-SOLVE_TIMEOUT = 240                      # s; a solve past this is abandoned
+SOLVE_TIMEOUT = 900                      # s; raised from 240: sv_handoff_tol gate runs to x~1400
 RETRY_RTOL    = 1e-6                     # one retry at this rtol_value after a timeout
 SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2)
 
