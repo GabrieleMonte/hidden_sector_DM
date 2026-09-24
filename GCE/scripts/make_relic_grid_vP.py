@@ -67,7 +67,7 @@ from hidden_sector_DM.HiddenSectorDM import (
 # ---- configuration ---------------------------------------------------
 
 OCH2_TARGET  = 0.12
-EPS_JOINT    = (1e-9,)                  # 1e-10 piece deferred; restore (1e-9, 1e-10) to run it
+EPS_JOINT    = (1e-9, 1e-10)             # both run in converged mode (GOH_EXIT_THRESH/XMAX_JOINT)
 EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three
 
 MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
