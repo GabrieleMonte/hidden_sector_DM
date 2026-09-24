@@ -76,8 +76,9 @@ MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
 MY_LIM   = (5.0, 100.0)                  # GeV, capped from above by mX
 RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv = 1
 N_MX, N_RV, N_ALPHAX = 46, 34, 8         # coarse (mX, rv) mesh; alpha_X per node
-ALPHAX_LIM = (2e-5, 5.0)                # extended: 1e-10 high-rv crossings reach alpha~2.7
-                                         # (non-perturbative, deliberately allowed)
+ALPHAX_LIM = (2e-5, 1.0)                # extended axis, capped at alpha_X = 1: crossings
+                                         # needing more (rv=0.95 at eps=1e-10 reaches ~2.7)
+                                         # come back NaN via the no-extrapolation clamp
 
 SOLVE_TIMEOUT = 2700                     # s; converged-mode solves run to xmax at high rv
 GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y/H (2026-09 audit:
