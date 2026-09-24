@@ -76,14 +76,17 @@ RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv 
 N_MX, N_RV, N_ALPHAX = 46, 34, 8         # coarse (mX, rv) mesh; alpha_X per node
 ALPHAX_LIM = (2e-5, 2e-2)
 
-SOLVE_TIMEOUT = 900                      # s; raised from 240: sv_handoff_tol gate runs to x~1400
+SOLVE_TIMEOUT = 2700                     # s; converged-mode solves run to xmax at high rv
+GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y/H (2026-09 audit:
+                                         # gated handoffs bias Omega by 1.15-3.2x, smoothly in rv)
+XMAX_JOINT = 5e3                         # converged to <0.3% vs 1.5e4 at both rv extremes
 RETRY_RTOL    = 1e-6                     # one retry at this rtol_value after a timeout
 SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2)
 
 NCORES = 4                               # default worker count; -n overrides
 CHECKPOINT_EVERY = 8                     # completed nodes between saves
 SEED_FROM_COARSE = True                  # reuse a coarser run's finished nodes
-SEC_PER_NODE = 290.0                     # measured, for the --dry-run estimate
+SEC_PER_NODE = 3000.0                    # converged mode, rough; low-rv nodes are ~5x faster
 
 # <sigma v>: GeV^-2 -> cm^3/s   (identical to GCE.spectrum.GEVM2_TO_CM3S)
 GEVM2_TO_CM3S = 1.9732698e-14 ** 2 * 2.99792458e10
@@ -185,6 +188,7 @@ def omega_h2_joint(mX, mY, alphaX, eps):
     try:
         joint = timed_solve(solver.solve_boltzmann_joint, epsX=eps,
                             return_bg_ICs=True, min_eps_floor_ratio=0.0,
+                            GoH_exit_thresh=GOH_EXIT_THRESH, xmax=XMAX_JOINT,
                             phase2_form="Y", verbose=False)
     except Exception:
         return np.nan
