@@ -67,14 +67,17 @@ from hidden_sector_DM.HiddenSectorDM import (
 # ---- configuration ---------------------------------------------------
 
 OCH2_TARGET  = 0.12
-EPS_JOINT    = (1e-9, 1e-10)             # both run in converged mode (GOH_EXIT_THRESH/XMAX_JOINT)
+EPS_JOINT    = (1e-10,)                  # CAMPAIGN: extended-axis 1e-10 only; the 1e-9 and
+                                         # secluded files keep the old 8pt/2e-2 axis -- do not
+                                         # run them with this ALPHAX (load_state would reset them)
 EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three
 
 MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
 MY_LIM   = (5.0, 100.0)                  # GeV, capped from above by mX
 RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv = 1
 N_MX, N_RV, N_ALPHAX = 46, 34, 8         # coarse (mX, rv) mesh; alpha_X per node
-ALPHAX_LIM = (2e-5, 2e-2)
+ALPHAX_LIM = (2e-5, 5.0)                # extended: 1e-10 high-rv crossings reach alpha~2.7
+                                         # (non-perturbative, deliberately allowed)
 
 SOLVE_TIMEOUT = 2700                     # s; converged-mode solves run to xmax at high rv
 GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y/H (2026-09 audit:
@@ -214,6 +217,9 @@ def relic_alphaX(omega):
     finite = np.isfinite(omega) & (omega > 0)
     if finite.sum() < 4:
         return np.nan
+    if not (omega[finite].min() <= OCH2_TARGET <= omega[finite].max()):
+        return np.nan            # crossing outside the sampled range: report
+                                 # honestly as absent instead of extrapolating
     order = np.argsort(omega[finite])                        # Omega h^2 ascending
     spline = CubicSpline(np.log(omega[finite][order]),
                          np.log(ALPHAX[finite][order]))
@@ -381,10 +387,9 @@ def dry_run():
     """Grid, what each output would reuse, and the wall-clock estimate."""
     todo = 0
     for path, eps, shape in (
-            (OUT_DIR / "relic_grid_vP_eps_secluded.npz",
-             np.array(EPS_SECLUDED), (len(EPS_SECLUDED), N_MX, N_RV)),
+            # CAMPAIGN: secluded entry fenced off with run_secluded
             *((OUT_DIR / f"relic_grid_vP_eps{e:.0e}.npz", e, (N_MX, N_RV))
-              for e in EPS_JOINT)):
+              for e in EPS_JOINT),):
         alpha_relic, sigmav, done = load_state(path, shape, eps, backup=False)
         left = int((~done).sum())
         todo += left
@@ -412,7 +417,7 @@ def main():
         dry_run()
         return
     print(f"workers: {args.ncores}")
-    run_secluded(args.ncores)
+    # run_secluded(args.ncores)   # CAMPAIGN: fenced off (old-axis file; see EPS_JOINT note)
     for eps in EPS_JOINT:
         run_joint(eps, args.ncores)
 
