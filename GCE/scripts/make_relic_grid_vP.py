@@ -67,18 +67,17 @@ from hidden_sector_DM.HiddenSectorDM import (
 # ---- configuration ---------------------------------------------------
 
 OCH2_TARGET  = 0.12
-EPS_JOINT    = (1e-10,)                  # CAMPAIGN: extended-axis 1e-10 only; the 1e-9 and
-                                         # secluded files keep the old 8pt/2e-2 axis -- do not
-                                         # run them with this ALPHAX (load_state would reset them)
+EPS_JOINT    = (1e-9, 1e-10)             # full joint solve (see "Which solver" above)
 EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three
 
 MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
 MY_LIM   = (5.0, 100.0)                  # GeV, capped from above by mX
 RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv = 1
 N_MX, N_RV, N_ALPHAX = 46, 34, 8         # coarse (mX, rv) mesh; alpha_X per node
-ALPHAX_LIM = (2e-5, 1.0)                # extended axis, capped at alpha_X = 1: crossings
-                                         # needing more (rv=0.95 at eps=1e-10 reaches ~2.7)
-                                         # come back NaN via the no-extrapolation clamp
+ALPHAX_LIMS = {                          # per-output alpha_X axis; load_state checks it, so
+    None:  (2e-5, 2e-2),                 # changing an entry resets that output's file.  The
+    1e-10: (2e-5, 1.0),                  # 1e-10 grid needs alpha up to ~0.15 at rv >= 0.8
+}                                        # (2026-09 recompute); None = secluded + other eps
 
 SOLVE_TIMEOUT = 2700                     # s; converged-mode solves run to xmax at high rv
 GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y/H (2026-09 audit:
@@ -110,7 +109,16 @@ mX_grid[off_grid] = np.nan
 mY_grid[off_grid] = np.nan
 N_VALID = int(np.isfinite(mX_grid).sum())
 
-ALPHAX = np.logspace(*np.log10(ALPHAX_LIM), N_ALPHAX)
+def _set_alphax(eps=None):
+    """Select the alpha_X axis for the output about to run.  Pool workers fork
+    after this is called, so the module global is what node_* and relic_alphaX
+    see; load_state and _save read the same one."""
+    global ALPHAX
+    ALPHAX = np.logspace(*np.log10(ALPHAX_LIMS.get(eps, ALPHAX_LIMS[None])),
+                         N_ALPHAX)
+
+
+_set_alphax()
 
 
 # ---- Boltzmann solves ---------------------------------------------
@@ -213,8 +221,8 @@ def omega_h2_joint(mX, mY, alphaX, eps):
 
 def relic_alphaX(omega):
     """alpha_X giving Omega_c h^2 = OCH2_TARGET, from a cubic spline of
-    log(alpha_X) against log(Omega h^2) over the sampled ALPHAX; extrapolated
-    when the target lies outside the sampled range."""
+    log(alpha_X) against log(Omega h^2) over the sampled ALPHAX; NaN when the
+    target is not bracketed by the sampled range (no extrapolation)."""
     finite = np.isfinite(omega) & (omega > 0)
     if finite.sum() < 4:
         return np.nan
@@ -352,6 +360,7 @@ def run_secluded(ncores):
     file with eps as the leading array axis."""
     path = OUT_DIR / "relic_grid_vP_eps_secluded.npz"
     eps = np.array(EPS_SECLUDED)
+    _set_alphax()
     alpha_relic, sigmav, done = load_state(path, (len(eps), N_MX, N_RV), eps)
 
     def on_result(res):
@@ -369,6 +378,7 @@ def run_secluded(ncores):
 def run_joint(eps, ncores):
     """alpha_X_relic and <sigma v> at a single eps via the joint solver."""
     path = OUT_DIR / f"relic_grid_vP_eps{eps:.0e}.npz"
+    _set_alphax(eps)
     alpha_relic, sigmav, done = load_state(path, (N_MX, N_RV), eps)
 
     def on_result(res):
@@ -388,9 +398,11 @@ def dry_run():
     """Grid, what each output would reuse, and the wall-clock estimate."""
     todo = 0
     for path, eps, shape in (
-            # CAMPAIGN: secluded entry fenced off with run_secluded
+            (OUT_DIR / "relic_grid_vP_eps_secluded.npz", np.array(EPS_SECLUDED),
+             (len(EPS_SECLUDED), N_MX, N_RV)),
             *((OUT_DIR / f"relic_grid_vP_eps{e:.0e}.npz", e, (N_MX, N_RV))
-              for e in EPS_JOINT),):
+              for e in EPS_JOINT)):
+        _set_alphax(eps if np.isscalar(eps) else None)
         alpha_relic, sigmav, done = load_state(path, shape, eps, backup=False)
         left = int((~done).sum())
         todo += left
@@ -410,15 +422,17 @@ def main():
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    axes = ", ".join(
+        ("default" if k is None else f"eps={k:g}")
+        + f" [{v[0]:g}, {v[1]:g}]" for k, v in ALPHAX_LIMS.items())
     print(f"grid: {N_MX} x {N_RV} = {N_VALID} valid (mX, mY) nodes, "
           f"mX in [{MX_LIM[0]:g}, {MX_LIM[1]:g}] GeV, rv <= {RV_MAX}  |  "
-          f"{N_ALPHAX} alpha_X in [{ALPHAX_LIM[0]:g}, {ALPHAX_LIM[1]:g}]  |  "
-          f"out -> {OUT_DIR}")
+          f"{N_ALPHAX} alpha_X, axis {axes}  |  out -> {OUT_DIR}")
     if args.dry_run:
         dry_run()
         return
     print(f"workers: {args.ncores}")
-    # run_secluded(args.ncores)   # CAMPAIGN: fenced off (old-axis file; see EPS_JOINT note)
+    run_secluded(args.ncores)
     for eps in EPS_JOINT:
         run_joint(eps, args.ncores)
 
