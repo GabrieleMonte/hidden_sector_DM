@@ -67,7 +67,9 @@ from hidden_sector_DM.HiddenSectorDM import (
 # ---- configuration ---------------------------------------------------
 
 OCH2_TARGET  = 0.12
-EPS_JOINT    = (1e-9, 1e-10)             # full joint solve (see "Which solver" above)
+EPS_JOINT    = ()                        # CAMPAIGN: secluded extended-axis recompute only;
+                                         # the 1e-9 and 1e-10 joint files are final.
+                                         # Restore to (1e-9, 1e-10) afterwards.
 EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three
 
 MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
@@ -75,16 +77,20 @@ MY_LIM   = (5.0, 100.0)                  # GeV, capped from above by mX
 RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv = 1
 N_MX, N_RV, N_ALPHAX = 46, 34, 8         # coarse (mX, rv) mesh; alpha_X per node
 ALPHAX_LIMS = {                          # per-output alpha_X axis; load_state checks it, so
-    None:  (2e-5, 2e-2),                 # changing an entry resets that output's file.  The
-    1e-10: (2e-5, 1.0),                  # 1e-10 grid needs alpha up to ~0.15 at rv >= 0.8
-}                                        # (2026-09 recompute); None = secluded + other eps
+    None:        (2e-5, 2e-2),           # changing an entry resets that output's file.
+    1e-10:       (2e-5, 1.0),            # 1e-10 and secluded need alpha > 2e-2 at rv >= 0.87
+    "secluded":  (2e-5, 1.0),            # (the old secluded file EXTRAPOLATED 78 such nodes);
+}                                        # capped at 1 as for 1e-10. None = other joint eps
 
 SOLVE_TIMEOUT = 2700                     # s; converged-mode solves run to xmax at high rv
 GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y/H (2026-09 audit:
                                          # gated handoffs bias Omega by 1.15-3.2x, smoothly in rv)
 XMAX_JOINT = 5e3                         # converged to <0.3% vs 1.5e4 at both rv extremes
 RETRY_RTOL    = 1e-6                     # one retry at this rtol_value after a timeout
-SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2)
+SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2,
+                 rtol_value=1e-6)        # 1e-8 exceeds any timeout at rv=0.95 (>45 min);
+                                         # 1e-6 solves those in ~1-6 min with identical
+                                         # handoffs and Omega to 0.03% (2026-09 probe)
 
 NCORES = 4                               # default worker count; -n overrides
 CHECKPOINT_EVERY = 8                     # completed nodes between saves
@@ -360,7 +366,7 @@ def run_secluded(ncores):
     file with eps as the leading array axis."""
     path = OUT_DIR / "relic_grid_vP_eps_secluded.npz"
     eps = np.array(EPS_SECLUDED)
-    _set_alphax()
+    _set_alphax("secluded")
     alpha_relic, sigmav, done = load_state(path, (len(eps), N_MX, N_RV), eps)
 
     def on_result(res):
@@ -402,7 +408,7 @@ def dry_run():
              (len(EPS_SECLUDED), N_MX, N_RV)),
             *((OUT_DIR / f"relic_grid_vP_eps{e:.0e}.npz", e, (N_MX, N_RV))
               for e in EPS_JOINT)):
-        _set_alphax(eps if np.isscalar(eps) else None)
+        _set_alphax(eps if np.isscalar(eps) else "secluded")
         alpha_relic, sigmav, done = load_state(path, shape, eps, backup=False)
         left = int((~done).sum())
         todo += left
@@ -423,7 +429,7 @@ def main():
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     axes = ", ".join(
-        ("default" if k is None else f"eps={k:g}")
+        ("default" if k is None else k if isinstance(k, str) else f"eps={k:g}")
         + f" [{v[0]:g}, {v[1]:g}]" for k, v in ALPHAX_LIMS.items())
     print(f"grid: {N_MX} x {N_RV} = {N_VALID} valid (mX, mY) nodes, "
           f"mX in [{MX_LIM[0]:g}, {MX_LIM[1]:g}] GeV, rv <= {RV_MAX}  |  "
