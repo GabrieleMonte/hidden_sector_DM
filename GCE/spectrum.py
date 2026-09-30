@@ -30,7 +30,7 @@ from .halo import HALO_2112, j_factor
 # bookkeeping in `pythia_runner`, but this stayed its import site.
 from .pythia_runner import (  # noqa: F401
     CHANNEL_TO_PDG, DEFAULT_SEED, MASSES, channels_for_species, load_spectrum,
-    run_spectrum,
+    min_mY, run_spectrum,
 )
 
 # ---- unit conversions ----------------------------------------------------
@@ -59,7 +59,7 @@ def _dnde(ebins, counts):
     return np.sqrt(ebins[:-1] * ebins[1:]), counts / np.diff(ebins)
 
 
-def cascade_spectrum(model, ebins, n_events: int = 200_000,
+def cascade_spectrum(model, ebins, n_events: int = 400_000,
                      species: str = "gamma", runner=None, seed=DEFAULT_SEED,
                      directory=None, on_mismatch: str = "raise",
                      verbose: bool = False):
@@ -80,8 +80,9 @@ def cascade_spectrum(model, ebins, n_events: int = 200_000,
     for ch, br in channels_for_species(model.branching_ratios_to_SM(), species):
         # Mediator too light to decay this way -- HDECAY leaves a ~1e-10 off-shell
         # WW*/ZZ* BR at all masses, and the cache (rightly) never holds these.
-        if (ch in CHANNEL_TO_PDG
-                and sum(MASSES[abs(p)] for p in CHANNEL_TO_PDG[ch]) >= model.mY):
+        # `min_mY` also covers the open-flavour thresholds, so this agrees with
+        # what the cache builder was willing to generate.
+        if ch in CHANNEL_TO_PDG and model.mY < min_mY(ch):
             continue
         if runner is None:
             spec = load_spectrum(model.mX, model.mY, ch, n_events, ebins,
@@ -100,7 +101,7 @@ def cascade_spectrum(model, ebins, n_events: int = 200_000,
     return _dnde(ebins, 2.0 * acc)
 
 
-def direct_spectrum(m_DM, ebins, channel: str = "bb", n_events: int = 200_000,
+def direct_spectrum(m_DM, ebins, channel: str = "bb", n_events: int = 400_000,
                     species: str = "gamma", runner=None, seed=DEFAULT_SEED,
                     directory=None, on_mismatch: str = "raise",
                     verbose: bool = False):
@@ -149,7 +150,7 @@ def _intensity(E, dNdE, m_DM, sigmav, kappa, halo, roi, units, per_sr):
     return E, base * (GEVM2_TO_CM3S if units == "cm" else JBAR_TO_NATURAL)
 
 
-def cascade_flux(model, ebins, sigmav=None, n_events: int = 200_000,
+def cascade_flux(model, ebins, sigmav=None, n_events: int = 400_000,
                  species: str = "gamma", majorana=None, units: str = "cm",
                  per_sr: bool = True, halo=None, roi=None, runner=None,
                  seed=DEFAULT_SEED, directory=None, on_mismatch: str = "raise",
@@ -186,7 +187,7 @@ def cascade_flux(model, ebins, sigmav=None, n_events: int = 200_000,
 
 
 def direct_flux(m_DM, ebins, sigmav, channel: str = "bb",
-                n_events: int = 200_000, species: str = "gamma",
+                n_events: int = 400_000, species: str = "gamma",
                 majorana: bool = True, units: str = "cm", per_sr: bool = True,
                 halo=None, roi=None, runner=None, seed=DEFAULT_SEED,
                 directory=None, on_mismatch: str = "raise",

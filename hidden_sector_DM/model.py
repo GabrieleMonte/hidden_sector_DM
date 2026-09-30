@@ -16,7 +16,7 @@ from typing import Optional
 
 from .constants import (SM_MYQ, BL_FERMIONS, LILJ_FERMIONS, BARYON_FERMIONS,
                         MZ, gW, sW, cW, gY as gY_SM, eC,
-                        Mh, vH, mN, HBARC2)
+                        Mh, vH, mN, HBARC2, Mb, MBp)
 
 # ---------------------------------------------------------------------------
 #  Direct detection helpers
@@ -112,6 +112,84 @@ _PAIR_NAME = {
     "u": "uu", "d": "dd", "s": "ss", "c": "cc", "b": "bb", "t": "tt",
     "nu_e": "nunu_e", "nu_mu": "nunu_mu", "nu_tau": "nunu_tau",
 }
+
+
+# =====================================================================
+#  Open-flavour thresholds
+# =====================================================================
+# A partonic width Gamma(Y -> q qbar) computed with the quark mass m_q opens at
+# mY = 2 m_q, but the pair can only become a physical final state above the
+# open-flavour threshold mY = 2 m_H, m_H being the lightest hadron carrying that
+# flavour.  For b quarks that is 2 m_B = 10.56 GeV against 2 m_b = 8.36 GeV, and
+# in the 2.2 GeV window between them the channel counts as open while nothing it
+# could hadronise into exists.  Pythia, asked to shower it anyway, fails outright
+# below ~9.5 GeV and above that returns a b-number-violating single-B event, so
+# any spectrum built on those BRs carries two spurious steps (see GCE/CLAUDE.md).
+#
+# The cure is to evaluate the phase-space factor of the width at m_H rather than
+# m_q: the width then vanishes at the physical threshold and returns to the
+# partonic answer well above it.  `open_flavour_factor` is the ratio of the two,
+# so a finished BR dict only has to be multiplied by it and renormalised --
+# `apply_open_flavour_thresholds` does both.
+#
+# Only `bb` is listed.  The c, s, u and d open-flavour thresholds (2 m_D = 3.73,
+# 2 m_K = 0.99, 2 m_pi = 0.28 GeV) all sit below the mediator masses these
+# portals are scanned at, and Pythia hadronises them correctly there, so adding
+# them would change physics rather than remove an artefact.  Add an entry as
+# (lightest flavoured hadron, quark mass in the partonic width) if that changes.
+_OPEN_FLAVOUR = {"bb": (MBp, Mb)}
+
+
+def _beta(m: float, mY: float) -> float:
+    """Daughter velocity in Y -> d dbar; 0 at or below threshold."""
+    return np.sqrt(max(1.0 - 4.0 * m * m / (mY * mY), 0.0))
+
+
+def open_flavour_factor(channel: str, mY: float, wave: str = "vector") -> float:
+    """Hadronic phase space of `channel`, relative to the partonic one.
+
+    Returns 1.0 for a channel with no open-flavour threshold (leptons, light
+    quarks), 0.0 at or below 2 m_H, and rises smoothly to 1.0 well above it.
+
+    `wave` is the threshold behaviour of the mediator's width: 'vector' for a
+    spin-1 mediator, whose width carries beta (3 - beta^2) / 2, or 'scalar' for
+    a spin-0 one, which carries beta^3.
+    """
+    if wave not in ("vector", "scalar"):
+        raise ValueError(f"wave must be 'vector' or 'scalar', got {wave!r}")
+    entry = _OPEN_FLAVOUR.get(channel)
+    if entry is None:
+        return 1.0
+    mH, mq = entry
+    bH = _beta(mH, mY)
+    if bH <= 0.0:
+        return 0.0
+    bq = _beta(mq, mY)
+    if bq <= 0.0:
+        return 0.0
+    if wave == "scalar":
+        return (bH / bq) ** 3
+    return (bH * (3.0 - bH * bH)) / (bq * (3.0 - bq * bq))
+
+
+def apply_open_flavour_thresholds(brs: dict, mY: float,
+                                  wave: str = "vector") -> dict:
+    """`brs` with every open-flavour channel rescaled, total unchanged.
+
+    The suppressed weight is redistributed over the channels that are really
+    open, which is the physical statement that the mediator still has to decay
+    to something.  A channel below its threshold comes back as exactly 0.0, so
+    callers that filter on BR > 0 drop it without further bookkeeping.
+    """
+    total = sum(brs.values())
+    if total <= 0.0:
+        return dict(brs)
+    out = {ch: br * open_flavour_factor(ch, mY, wave) for ch, br in brs.items()}
+    new_total = sum(out.values())
+    if new_total <= 0.0:
+        return {ch: 0.0 for ch in brs}
+    scale = total / new_total
+    return {ch: br * scale for ch, br in out.items()}
 
 
 # =====================================================================
@@ -235,7 +313,8 @@ class VectorPortal(HiddenSectorModel):
                 total += w
         if total <= 0:
             return {ch: 0.0 for ch in partials}
-        return {ch: w / total for ch, w in partials.items()}
+        return apply_open_flavour_thresholds(
+            {ch: w / total for ch, w in partials.items()}, self.mY, "vector")
 
     def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
         """
@@ -502,7 +581,8 @@ class BLPortal(HiddenSectorModel):
                 total += w
         if total <= 0:
             return {ch: 0.0 for ch in partials}
-        return {ch: w / total for ch, w in partials.items()}
+        return apply_open_flavour_thresholds(
+            {ch: w / total for ch, w in partials.items()}, self.mY, "vector")
 
     def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
         """
@@ -654,7 +734,8 @@ class LiLjPortal(HiddenSectorModel):
             total += w
         if total <= 0:
             return {ch: 0.0 for ch in partials}
-        return {ch: w / total for ch, w in partials.items()}
+        return apply_open_flavour_thresholds(
+            {ch: w / total for ch, w in partials.items()}, self.mY, "vector")
 
     def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
         """
@@ -786,7 +867,8 @@ class BaryonPortal(HiddenSectorModel):
             total += w
         if total <= 0:
             return {ch: 0.0 for ch in partials}
-        return {ch: w / total for ch, w in partials.items()}
+        return apply_open_flavour_thresholds(
+            {ch: w / total for ch, w in partials.items()}, self.mY, "vector")
 
     def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe) -> float:
         """
@@ -1000,7 +1082,10 @@ class HiggsPortal(HiddenSectorModel):
         # Remove internal 'total' key — return only channel BRs
         br.pop('total', None)
         br.pop('total_sp', None)
-        return br
+        # HDECAY opens phi -> b bbar at 2 m_b, which is 2.2 GeV below the
+        # lightest B pair it could actually fragment into.  phi is a scalar, so
+        # its width carries beta^3.
+        return apply_open_flavour_thresholds(br, self.mY, "scalar")
 
     def sigma_SI(self, epsX: float, A_N: int = _A_Xe, Z_N: int = _Z_Xe,
                  f_N: float = 0.30) -> float:

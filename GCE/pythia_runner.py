@@ -11,6 +11,7 @@ The pythia8mc wheel execs every .py in a *relative* `python/` at import.
 
 from __future__ import annotations
 import math
+import uuid
 import warnings
 from bisect import bisect_right
 from pathlib import Path
@@ -76,6 +77,45 @@ CHANNEL_TO_PDG: dict[str, tuple[int, int]] = {
     "ZZ":      (23,  23),
     "hh":      (25,  25),
 }
+
+# Lightest hadron carrying each heavy flavour, and so the lowest mediator mass
+# at which Pythia can fragment that q qbar pair into a physical final state.
+# Below 2 m_H there is nothing for the string to become: for bb Pythia rejects
+# every event outright up to ~9.5 GeV (its own constituent m_b is 4.8, not the
+# 4.18 injected here) and between there and 2 m_B = 10.56 GeV returns a
+# b-number-violating single-B event whose photon spectrum is spuriously hard.
+# Either way the cache would hold something unusable, so `run_channel` refuses.
+#
+# Keep this in step with `_OPEN_FLAVOUR` in hidden_sector_DM/model.py, which
+# suppresses the same channels' branching ratios over the same range -- that is
+# what stops a cascade ever asking for a spectrum this refuses to make.  (The
+# duplication is deliberate: this module stays independent of the model package,
+# as it already does for MASSES.)
+HADRON_MASSES = {"bb": 5.27934}                 # B+-
+
+
+def min_mY(channel: str) -> float:
+    """Lowest mediator mass `channel` can be generated at.
+
+    The open-flavour threshold where the channel has one, otherwise just the
+    sum of the injected daughter masses.
+    """
+    if channel not in CHANNEL_TO_PDG:
+        raise KeyError(f"channel '{channel}' has no PDG mapping")
+    mH = HADRON_MASSES.get(channel)
+    if mH is not None:
+        return 2.0 * mH
+    return sum(MASSES[abs(p)] for p in CHANNEL_TO_PDG[channel])
+
+
+# Fraction of injected decays Pythia must actually hadronise.  Below MIN_ACCEPTED
+# the survivors are the subset that happened to fragment, which is a biased
+# sample rather than a spectrum, so `run_channel` raises; between there and
+# WARN_ACCEPTED it warns.  A few per mille of attrition is normal well above
+# threshold and passes silently.
+MIN_ACCEPTED = 0.5
+WARN_ACCEPTED = 0.99
+
 
 # Channels that produce none of a given species, so are not worth showering.
 _NEGLIGIBLE = {
@@ -173,6 +213,8 @@ class PythiaRunner:
         # Decay angles come from here, not the global numpy RNG, so that `seed`
         # fixes the whole run rather than just Pythia's half of it.
         self._rng = np.random.default_rng(int(seed))
+        # Accepted-event count of the last `run_channel`, for `run_spectrum`.
+        self.last_n_ok = 0
 
     def _inject_decay(self, ev, pdg_pair, m_Y: float, p_Y: float):
         id1, id2 = int(pdg_pair[0]), int(pdg_pair[1])
@@ -193,6 +235,17 @@ class PythiaRunner:
         """Run n_events Y -> `channel` decays. Returns {species: counts_per_decay}."""
         if channel not in CHANNEL_TO_PDG:
             raise KeyError(f"channel '{channel}' has no PDG mapping")
+        floor = min_mY(channel)
+        if m_Y < floor:
+            raise ValueError(
+                f"m_Y={m_Y:g} GeV is below the {floor:g} GeV floor for "
+                f"channel '{channel}'"
+                + (f" (open-flavour threshold 2 m_H = 2 x "
+                   f"{HADRON_MASSES[channel]:g} GeV)"
+                   if channel in HADRON_MASSES else "")
+                + "; Pythia cannot hadronise it there. The branching ratio is "
+                  "suppressed to zero over the same range, so nothing should "
+                  "be asking for this spectrum.")
         ebins = np.asarray(ebins, dtype=float)
         nb = len(ebins) - 1
         if nb <= 0:
@@ -229,8 +282,25 @@ class PythiaRunner:
                 if e_lo <= e < e_hi:
                     counts[species][bisect_right(edges, e) - 1] += 1.0
 
-        denom = float(n_ok if n_ok > 0 else n_events)
-        return {k: np.array(v) / denom for k, v in counts.items()}
+        # An all-zero histogram used to come back silently from here whenever
+        # Pythia rejected every event; 831 such files sat in the cache.
+        frac = n_ok / float(n_events)
+        if frac < MIN_ACCEPTED:
+            raise RuntimeError(
+                f"Pythia hadronised {n_ok} of {int(n_events)} "
+                f"({frac:.1%}) '{channel}' decays at m_X={m_X:g}, "
+                f"m_Y={m_Y:g} GeV; the survivors are a biased subset, not a "
+                f"spectrum. Nothing is written.")
+        if frac < WARN_ACCEPTED:
+            warnings.warn(
+                f"Pythia rejected {int(n_events) - n_ok} of {int(n_events)} "
+                f"({1 - frac:.1%}) '{channel}' decays at m_X={m_X:g}, "
+                f"m_Y={m_Y:g} GeV; normalising per accepted decay.",
+                RuntimeWarning, stacklevel=2)
+        # Recorded for `run_spectrum` to write into the .npz: the acceptance is
+        # the one thing a finished histogram cannot be asked about afterwards.
+        self.last_n_ok = n_ok
+        return {k: np.array(v) / float(n_ok) for k, v in counts.items()}
 
 
 # ---- 3. cached spectra on disk ------------------------------------------
@@ -348,14 +418,22 @@ def run_spectrum(runner, m_X, m_Y, channel, n_events, ebins, directory=None,
 
     hist = runner.run_channel(m_X, m_Y, channel, n_events, ebins)
     path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(path,
+    # Written to a unique temporary and renamed into place.  rename() is atomic
+    # within a filesystem, so a reader never sees a half-written .npz and a job
+    # killed at the wall clock leaves either the old file or the new one, never
+    # a truncated one.  The uuid keeps two cluster ranks sharing a filesystem
+    # from colliding on the temporary.
+    tmp = path.with_name(f"{path.stem}.{uuid.uuid4().hex[:8]}.tmp.npz")
+    np.savez(tmp,
              ebins=ebins,
              m_X=float(m_X), m_Y=float(m_Y),
              channel=str(channel),
              n_events=int(n_events), seed=int(runner.seed),
              pythia_version=_pythia_version(),
              decayed_long_lived=np.array(LONG_LIVED_DECAYED, dtype=int),
+             n_ok=int(runner.last_n_ok),
              **hist)
+    tmp.replace(path)
     if verbose:
         print(f"  {channel:8s} wrote {path.name}", flush=True)
     return hist
