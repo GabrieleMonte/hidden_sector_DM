@@ -74,7 +74,11 @@ N_EVENTS = 400_000
 SEED = 12345
 SPECIES = "gamma"               # picks the channels; the .npz holds all targets
 N_BINS = 180                    # `default_ebins` resolution, per point
-OUT_DIR = Path(__file__).resolve().parents[1] / "channel_spectra"
+# Compute nodes mount /global/homes over DVS, which is slow for the ~157k
+# small files a full grid writes.  $CHANNEL_SPECTRA_DIR points the run at
+# $PSCRATCH instead; unset, it keeps writing into the repo as before.
+OUT_DIR = Path(os.environ.get("CHANNEL_SPECTRA_DIR",
+                              Path(__file__).resolve().parents[1] / "channel_spectra"))
 
 # Every channel Pythia can shower, with BR = 1 so none is dropped for being
 # small.  Neutrino channels still go, since they make no photons at all.
@@ -123,6 +127,13 @@ if not 0 <= args.worker < args.nworkers:
     ap.error(f"--worker must satisfy 0 <= {args.worker} < {args.nworkers}")
 
 todo = list(range(args.worker, GRID.shape[1], args.nworkers))
+# Longest-processing-time-first.  Cost per point climbs monotonically with mY
+# (more phase space to shower: ~10 core-min at mY=5, ~26 at mY=100), and the
+# grid is built in ascending mY, so the default order leaves every rank's most
+# expensive points for the end -- exactly the ragged tail that decides the
+# makespan.  Handing the pool the heavy points first lets the cheap ones fill
+# in behind them.
+todo.sort(key=lambda i: -GRID[1, i])
 n = len(todo)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 print(f"rank {args.worker}/{args.nworkers}: {n} of {GRID.shape[1]} points, "
