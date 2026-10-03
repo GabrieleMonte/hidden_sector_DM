@@ -90,7 +90,7 @@ def _check_bin_coverage(t, where: str):
     return t
 
 
-def direct_template(m_DM, channel: str = "bb", n_events: int = 200_000,
+def direct_template(m_DM, channel: str = "bb", n_events: int = 400_000,
                     majorana: bool = True, seed=DEFAULT_SEED, n_bins: int = 180,
                     e_min=None, halo=HALO_2112, runner=None,
                     on_mismatch: str = "raise"):
@@ -108,7 +108,7 @@ def direct_template(m_DM, channel: str = "bb", n_events: int = 200_000,
     return _check_bin_coverage(rebin_to_gce(E, dPhidE), f"m_DM = {m_DM:g} GeV")
 
 
-def cascade_template(model, n_events: int = 100_000, seed=DEFAULT_SEED,
+def cascade_template(model, n_events: int = 400_000, seed=DEFAULT_SEED,
                      n_bins: int = 180, e_min=None, halo=HALO_2112,
                      runner=None, on_mismatch: str = "raise"):
     """14-bin E^2 dPhi/dE for the cascade of `model`, at <sigma v> = 1 cm^3/s.
@@ -118,7 +118,7 @@ def cascade_template(model, n_events: int = 100_000, seed=DEFAULT_SEED,
     overlay on a finished region, never a fit parameter.  kappa comes from
     `model.include_antiparticlesX`: 16 for a Dirac X against 8 for the direct
     reference, so say which is which when overlaying the two.  `n_events`
-    defaults to the 100k the cascade cache holds.
+    defaults to the 400k the cascade cache holds.
     """
     kw = {} if e_min is None else dict(e_min=e_min)
     E, dPhidE = cascade_flux(model, default_ebins(model.mX, n_bins=n_bins, **kw),

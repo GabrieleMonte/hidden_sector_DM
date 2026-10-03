@@ -30,7 +30,8 @@ KPC_CM = 3.0856775814913673e21  # cm per kpc
 
 GAMMA_DEF = 1.2
 RC_DEF = 20.0        # kpc
-RHO_LOCAL_DEF = 0.4  # GeV/cm^3
+#RHO_LOCAL_DEF = 0.4  # GeV/cm^3
+RHO_LOCAL_DEF = 0.44  # GeV/cm^3
 R_SUN_DEF = 8.5      # kpc; 2112.09706 keeps 8.5 rather than 8.3, as GALPROP assumes it
 R_HALO_DEF = 100.0   # kpc, outer truncation of the line-of-sight integral
 

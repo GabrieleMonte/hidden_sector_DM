@@ -661,6 +661,7 @@ class BoltzmannSolver:
         cannibal_switch_full: float = 1.0,
         SMlock_thr: float = 1.0,
         GoH_exit_thresh: float = 1.0,
+        sv_handoff_tol: float = 1.5,
         min_eps_floor_ratio: float = 0.5,
         phase2_form: str = 'Y',
         return_bg_ICs: bool = False,
@@ -714,6 +715,16 @@ class BoltzmannSolver:
             Validity floor.  Raises ValueError if
             epsX < min_eps_floor_ratio * eps_therm.  Phase 2 numerics
             become unreliable well below this.  Set to 0 to disable.
+        sv_handoff_tol : float
+            Coldness gate on the Gamma_Y/H Phase-2 exit.  The handoff to
+            `solve_background` -- which quenches the residual annihilation
+            with the constant s-wave <sigma v> -- is deferred until
+            <sigma v>(T_D) / <sigma v>_s-wave < sv_handoff_tol.  Near
+            threshold (m_Y -> m_X) the thermal average exceeds the s-wave
+            limit by factors of a few while the sector is cannibal-heated,
+            so an early handoff truncates the hot part of the quench with
+            the wrong cross section.  `inf` recovers the old behaviour;
+            the gate is ignored when the s-wave cross section vanishes.
         phase2_form : {'Y', 'mu'}
             Phase 2 variables: lnY_X/lnY_Y (default, numerically robust at
             small alphaX) or mu_X/mu_Y (legacy).
@@ -734,6 +745,8 @@ class BoltzmannSolver:
 
         # Compute thermalisation floor (used for ratio mode and validity guard).
         GammaY_norm = model.decay_width_to_SM(1.0)
+        # s-wave <sigma v>, for the coldness gate on the Phase-2 handoff.
+        sv_swave0 = model.sigmav_XX_to_YY_swave()
         if GammaY_norm > 0:
             eps_therm = np.sqrt(cosmo.hubble(mX / 20.0) / GammaY_norm)
         else:
@@ -1161,6 +1174,11 @@ class BoltzmannSolver:
         for xf in xfList:
             if x0 >= xf:
                 continue
+            if x0 * 1.001 >= xf * 0.999:
+                # xf_tail steps by 10, so above x ~ 5e3 consecutive xf are
+                # closer than the 1.001/0.999 margins and the linspace would
+                # be descending; solve_ivp rejects unsorted t_eval.
+                continue
             xs = np.linspace(x0 * 1.001, xf * 0.999, n_points) if x0 > 1 \
                  else np.logspace(np.log10(x0 * 1.001),
                                   np.log10(xf * 0.999), n_points)
@@ -1312,7 +1330,11 @@ class BoltzmannSolver:
                     th_start = _thermo(x0, y_full[0], muX_chk, muY_chk)
                     GoH_start   = GammaY / th_start['Htot']
                     rho_ratio_0 = (th_start['Htot'] / th_start['H']) ** 2 - 1.0
-                    if (GoH_start >= GoH_exit_thresh or rho_ratio_0 >= 1.0) \
+                    sv_cold_0 = (sv_swave0 <= 0.0
+                                 or th_start['sv_XXYY'] / sv_swave0
+                                 < sv_handoff_tol)
+                    if ((GoH_start >= GoH_exit_thresh and sv_cold_0)
+                            or rho_ratio_0 >= 1.0) \
                             and muX_chk > MUX_EXIT_THRESH:
                         converged = True
                         x_converged = x0
@@ -1344,6 +1366,10 @@ class BoltzmannSolver:
                     if _muX(t, y) < MUX_EXIT_THRESH:
                         return -1.0
                     th_e = _state_thermo(t, y)
+                    if (sv_swave0 > 0.0
+                            and th_e['sv_XXYY'] / sv_swave0 >= sv_handoff_tol):
+                        # sector still too hot for the s-wave background quench
+                        return -1.0
                     return GammaY / th_e['Htot'] - GoH_exit_thresh
                 ev_GoH.terminal  = (GammaY > 0)
                 ev_GoH.direction = +1

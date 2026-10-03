@@ -19,6 +19,8 @@ Mb   = 4.18
 # --- Meson / boson masses ---
 Mpip = 139.57039e-3
 MKp  = 493.677e-3
+MDp  = 1.86966              # D+-, lightest charmed hadron
+MBp  = 5.27934              # B+-, lightest bottom hadron
 MZ   = 91.1876
 MW   = 80.379
 Mh   = 125.10               # SM Higgs mass (GeV)

@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling scripts
 
-from GCE.pythia_runner import CHANNEL_TO_PDG, MASSES, PythiaRunner, run_spectrum
+from GCE.pythia_runner import CHANNEL_TO_PDG, PythiaRunner, min_mY, run_spectrum
 from GCE.spectrum import default_ebins
 
 # ---- configuration -------------------------------------------------------
@@ -44,7 +44,7 @@ DECIMALS = 2                   # rounding; the consumer must ask for the same ma
 
 MASS_GRID = np.round(np.logspace(*np.log10(M_LIM), N_MASS), DECIMALS)
 
-N_EVENTS = 200_000
+N_EVENTS = 400_000
 SEED = 12345
 N_BINS = 180                   # `default_ebins` resolution, per mass
 CHANNELS = ("bb",)             # the arXiv:2112.09706 Fig. 18 reference; extend as needed
@@ -64,7 +64,7 @@ def run_point(i: int) -> str:
         if _RUNNER is None:
             _RUNNER = PythiaRunner(seed=SEED)
         for ch in CHANNELS:
-            if sum(MASSES[abs(p)] for p in CHANNEL_TO_PDG[ch]) >= m_Y:
+            if m_Y < min_mY(ch):
                 continue                 # sqrt(s) too low for this channel
             run_spectrum(_RUNNER, m_X, m_Y, ch, N_EVENTS, ebins, OUT_DIR,
                          verbose=False)

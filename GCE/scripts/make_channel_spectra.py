@@ -31,7 +31,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling scripts
 
 from GCE.pythia_runner import (                             
-    CHANNEL_TO_PDG, MASSES, PythiaRunner, channels_for_species, run_spectrum,
+    CHANNEL_TO_PDG, PythiaRunner, channels_for_species, min_mY, run_spectrum,
+    spectrum_path,
 )
 from GCE.spectrum import default_ebins                      
 
@@ -70,11 +71,15 @@ def triangle_grid(n_points: int = N_POINTS, n_cols: int = N_COLS,
 
 
 GRID = triangle_grid()          # (2, 16384) masses in GeV
-N_EVENTS = 200_000
+N_EVENTS = 400_000
 SEED = 12345
 SPECIES = "gamma"               # picks the channels; the .npz holds all targets
 N_BINS = 180                    # `default_ebins` resolution, per point
-OUT_DIR = Path(__file__).resolve().parents[1] / "channel_spectra"
+# Compute nodes mount /global/homes over DVS, which is slow for the ~157k
+# small files a full grid writes.  $CHANNEL_SPECTRA_DIR points the run at
+# $PSCRATCH instead; unset, it keeps writing into the repo as before.
+OUT_DIR = Path(os.environ.get("CHANNEL_SPECTRA_DIR",
+                              Path(__file__).resolve().parents[1] / "channel_spectra"))
 
 # Every channel Pythia can shower, with BR = 1 so none is dropped for being
 # small.  Neutrino channels still go, since they make no photons at all.
@@ -91,8 +96,12 @@ def run_point(i: int) -> str:
         if _RUNNER is None:                 # 128 of these start at once
             _RUNNER = PythiaRunner(seed=SEED)
         for ch in CHANNELS:
-            if sum(MASSES[abs(p)] for p in CHANNEL_TO_PDG[ch]) >= mY:
-                continue                    # Y is too light to decay this way
+            if mY < min_mY(ch):
+                # Y is too light to decay this way, or -- for a heavy-flavour
+                # channel -- too light for Pythia to fragment the pair into
+                # real hadrons.  Either way the branching ratio is zero there,
+                # so the file would never be read.
+                continue
             run_spectrum(_RUNNER, mX, mY, ch, N_EVENTS, ebins, OUT_DIR,
                          verbose=False)
     except Exception as exc:                # one bad point must not kill the pool
@@ -103,15 +112,63 @@ def run_point(i: int) -> str:
 ap = argparse.ArgumentParser()
 ap.add_argument("-n", "--ncores", type=int,
                     default=len(os.sched_getaffinity(0)))
+# Sharding across cluster ranks.  Not configuration -- like --ncores it says
+# how to run, not what to compute -- so it stays a flag.  Rank `w` of `W` takes
+# GRID columns w, w+W, w+2W, ...: a stride rather than a contiguous block,
+# because cost rises smoothly with mY along a column and a block would hand one
+# rank all the expensive points.  Every rank writes into the same OUT_DIR; that
+# is safe because run_spectrum skips an existing file and renames its own
+# temporary into place, so an overlap costs time, never a corrupt file.
+ap.add_argument("--worker", type=int, default=0, metavar="W",
+                help="this rank's index, 0 <= W < --nworkers (default 0)")
+ap.add_argument("--nworkers", type=int, default=1, metavar="N",
+                help="number of cluster ranks sharing the grid (default 1)")
+ap.add_argument("--check", action="store_true",
+                help="report what is still missing and exit; starts no Pythia")
 args = ap.parse_args()
-n = GRID.shape[1]
+if not 0 <= args.worker < args.nworkers:
+    ap.error(f"--worker must satisfy 0 <= {args.worker} < {args.nworkers}")
+
+todo = list(range(args.worker, GRID.shape[1], args.nworkers))
+# Longest-processing-time-first.  Cost per point climbs monotonically with mY
+# (more phase space to shower: ~10 core-min at mY=5, ~26 at mY=100), and the
+# grid is built in ascending mY, so the default order leaves every rank's most
+# expensive points for the end -- exactly the ragged tail that decides the
+# makespan.  Handing the pool the heavy points first lets the cheap ones fill
+# in behind them.
+if args.check:
+    # Which (point, channel) files this rank's slice still owes.  Mirrors the
+    # `mY < min_mY(ch)` skip in run_point exactly, so "0 missing" means
+    # "nothing left to do", not "nothing left that I know how to name".
+    want = miss = 0
+    short_points = []
+    for i in todo:
+        mX, mY = (float(v) for v in GRID[:, i])
+        open_ch = [ch for ch in CHANNELS if mY >= min_mY(ch)]
+        gap = [ch for ch in open_ch
+               if not spectrum_path(mX, mY, ch, N_EVENTS, SEED, OUT_DIR).exists()]
+        want += len(open_ch)
+        miss += len(gap)
+        if gap:
+            short_points.append((mX, mY, gap))
+    print(f"rank {args.worker}/{args.nworkers}: {want - miss}/{want} files present, "
+          f"{miss} missing across {len(short_points)} of {len(todo)} points")
+    for mX, mY, gap in short_points[:10]:
+        print(f"  mX={mX:7.2f} mY={mY:7.2f}  missing: {' '.join(gap)}")
+    if len(short_points) > 10:
+        print(f"  ... and {len(short_points) - 10} more points")
+    sys.exit(0 if miss == 0 else 1)
+
+todo.sort(key=lambda i: -GRID[1, i])
+n = len(todo)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-print(f"{n} points, <={len(CHANNELS)} channels each, "
+print(f"rank {args.worker}/{args.nworkers}: {n} of {GRID.shape[1]} points, "
+      f"<={len(CHANNELS)} channels each, {N_EVENTS} events, "
       f"{args.ncores} cores -> {OUT_DIR}", flush=True)
 t0 = time.time()
 
 with mp.Pool(args.ncores) as pool:
-    for k, msg in enumerate(pool.imap_unordered(run_point, range(n), 1), 1):
+    for k, msg in enumerate(pool.imap_unordered(run_point, todo, 1), 1):
         if msg:
             print(msg, flush=True)
         if k % 200 == 0 or k == n:

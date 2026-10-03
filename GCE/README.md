@@ -101,10 +101,14 @@ resumable — an existing `.npz` is loaded, not regenerated:
 # from the repository root
 python GCE/scripts/make_channel_spectra.py     # (mX, mY) triangle grid, every channel at BR = 1
 python GCE/scripts/make_bb_reference.py        # direct b bbar at 50 DM masses
+
+# across a cluster: rank w of W takes GRID columns w, w+W, w+2W, ...
+python GCE/scripts/make_channel_spectra.py --worker $RANK --nworkers $NRANKS -n 128
 ```
 
 Edit the module-level configuration blocks (`MX_LIM`, `N_POINTS`, `N_EVENTS`,
-`CHANNELS`, ...) rather than adding CLI flags. The favoured region itself is
+`CHANNELS`, ...) rather than adding CLI flags; `-n/--ncores` and
+`--worker/--nworkers` are how you run it, not what it computes. The favoured region itself is
 built in the notebooks, not here.
 
 ## Using it as a library
@@ -119,10 +123,10 @@ model = VectorPortal(mX=76, mY=60, gX=2, gY=3, alphaX=1e-2)
 ebins = default_ebins(model.mX)
 
 # Loads only. A channel that is not cached raises, naming the file it wanted.
-E, dNdE = cascade_spectrum(model, ebins, n_events=200_000)
+E, dNdE = cascade_spectrum(model, ebins, n_events=400_000)
 
 # Pass a runner to generate whatever is missing, then carry on as before.
-E, dNdE = cascade_spectrum(model, ebins, n_events=200_000,
+E, dNdE = cascade_spectrum(model, ebins, n_events=400_000,
                            runner=PythiaRunner(seed=12345))
 ```
 

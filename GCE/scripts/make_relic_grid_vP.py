@@ -37,6 +37,37 @@ contains the 16 x 12 one, so a previous run's finished nodes are reused instead
 of resolved (`SEED_FROM_COARSE`).  The previous file is copied to
 `*_<n>nodes_backup.npz` before the first overwrite.
 
+CAREFUL: those sets nest inside the 16 x 12 mesh, NOT inside each other.  Only
+12 of the 34 rv columns land on the 45-point mesh, so N_RV 34 -> 45 fails
+`_embed` and restarts all 1053 nodes from scratch.  To REFINE an existing 46 x
+34 run, bisect: N_RV 34 -> 67 puts every old column on an even index (old j ->
+new 2j, verified exact) and every new column at the log-midpoint of a pair, so
+all 1053 finished nodes are reused.
+
+Campaign mode
+-------------
+`ONLY_RV_COLUMNS` restricts a run to a few rv column indices, so a bisected
+mesh can be filled one column at a time instead of solving all 33 new ones
+(1518 nodes/output).  Nodes outside those columns are left untouched -- NOT
+marked done -- so a later run picks them up with no mask clearing.  Set
+`EPS_JOINT`/`RUN_SECLUDED` to match, and restore all three when the campaign
+ends (as after the 2026-09-25 and 2026-09-29 campaigns).
+
+2026-09-30 campaign (DONE, commit a03364657f): N_RV=67, ONLY_RV_COLUMNS=(65,).
+Constants restored; N_RV deliberately left at 67.  BEWARE what that means for
+the OTHER two outputs: they are still only 34 columns deep, so on the 67-mesh
+--dry-run now honestly reports ~1030 unsolved nodes each.  That is not a bug
+and nothing is lost -- their 34 columns seed fine (34 embeds in 67) -- but do
+not launch a bare run without reading the dry-run first.  To fill more columns
+for eps=1e-9 only, set ONLY_RV_COLUMNS and EPS_JOINT/RUN_SECLUDED as below.
+Details of that campaign: rv = 0.9085, the
+log-midpoint of the 0.8689 -> 0.9500 gap, eps = 1e-9 only.  Reason: a 3-node
+probe at that rv found alpha_relic sits 7.7 % BELOW the log-log interpolation
+the GCE notebook assumes across that gap (0.9231/0.9223/0.9226 at mX =
+39.6/43.0/46.8 -- mX-independent to 0.1 %), and propagating that moves the
+near-diagonal GCE lobe from dchi2 = 6.68 to 6.17, i.e. across the 2-sigma
+threshold.  46 nodes x 8 alpha; solves measured at 113-129 s each.
+
 Runs on `multiprocessing.Pool`, one node per task, `-n/--ncores` workers.
 State is a per-node boolean mask rewritten every CHECKPOINT_EVERY completions,
 so a killed run resumes from the nodes it had actually finished (tasks complete
@@ -67,23 +98,43 @@ from hidden_sector_DM.HiddenSectorDM import (
 # ---- configuration ---------------------------------------------------
 
 OCH2_TARGET  = 0.12
-EPS_JOINT    = (1e-9, 1e-10)             # one joint solve per (node, eps)
-EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three
+EPS_JOINT    = (1e-9, 1e-10)             # full joint solve (see "Which solver" above)
+RUN_SECLUDED = True                      # also refresh the secluded output
+EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three; rv=0.95 is
+                                         # masked NaN in the output (solver does not
+                                         # converge there for alpha >~ 0.05)
 
 MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
 MY_LIM   = (5.0, 100.0)                  # GeV, capped from above by mX
 RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv = 1
-N_MX, N_RV, N_ALPHAX = 46, 34, 8         # coarse (mX, rv) mesh; alpha_X per node
-ALPHAX_LIM = (2e-5, 2e-2)
+N_MX, N_RV, N_ALPHAX = 46, 67, 8         # coarse (mX, rv) mesh; alpha_X per node.
+                                         # N_RV STAYS 67: the eps=1e-9 output is now
+                                         # 67 wide, and 67 does not embed in 34, so
+                                         # reverting would make load_state discard it
+                                         # and re-solve all 1053 nodes.
+ONLY_RV_COLUMNS = None                   # restrict the run to these rv column indices
+                                         # (None = all); see "Campaign mode" above.
+ALPHAX_LIMS = {                          # per-output alpha_X axis; load_state checks it, so
+    None:        (2e-5, 2e-2),           # changing an entry resets that output's file.
+    1e-10:       (2e-5, 1.0),            # 1e-10 and secluded need alpha > 2e-2 at rv >= 0.87
+    "secluded":  (2e-5, 1.0),            # (the old secluded file EXTRAPOLATED 78 such nodes);
+}                                        # capped at 1 as for 1e-10. None = other joint eps
 
-SOLVE_TIMEOUT = 240                      # s; a solve past this is abandoned
+SOLVE_TIMEOUT = 2700                     # s; converged-mode solves run to xmax at high rv
+GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y/H (2026-09 audit:
+                                         # gated handoffs bias Omega by 1.15-3.2x, smoothly in rv)
+XMAX_JOINT = 5e3                         # converged to <0.3% vs 1.5e4 at both rv extremes
 RETRY_RTOL    = 1e-6                     # one retry at this rtol_value after a timeout
-SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2)
+SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2,
+                 rtol_value=1e-6)        # 1e-8 exceeds any timeout at rv=0.95 (>45 min);
+                                         # 1e-6 solves those in ~1-6 min with identical
+                                         # handoffs and Omega to 0.03% (2026-09 probe)
 
 NCORES = 4                               # default worker count; -n overrides
 CHECKPOINT_EVERY = 8                     # completed nodes between saves
 SEED_FROM_COARSE = True                  # reuse a coarser run's finished nodes
-SEC_PER_NODE = 290.0                     # measured, for the --dry-run estimate
+BACKUP_PREVIOUS  = False                 # history lives on cluster-relic-vP commits
+SEC_PER_NODE = 3000.0                    # converged mode, rough; low-rv nodes are ~5x faster
 
 # <sigma v>: GeV^-2 -> cm^3/s   (identical to GCE.spectrum.GEVM2_TO_CM3S)
 GEVM2_TO_CM3S = 1.9732698e-14 ** 2 * 2.99792458e10
@@ -103,7 +154,16 @@ mX_grid[off_grid] = np.nan
 mY_grid[off_grid] = np.nan
 N_VALID = int(np.isfinite(mX_grid).sum())
 
-ALPHAX = np.logspace(*np.log10(ALPHAX_LIM), N_ALPHAX)
+def _set_alphax(eps=None):
+    """Select the alpha_X axis for the output about to run.  Pool workers fork
+    after this is called, so the module global is what node_* and relic_alphaX
+    see; load_state and _save read the same one."""
+    global ALPHAX
+    ALPHAX = np.logspace(*np.log10(ALPHAX_LIMS.get(eps, ALPHAX_LIMS[None])),
+                         N_ALPHAX)
+
+
+_set_alphax()
 
 
 # ---- Boltzmann solves ---------------------------------------------
@@ -185,6 +245,7 @@ def omega_h2_joint(mX, mY, alphaX, eps):
     try:
         joint = timed_solve(solver.solve_boltzmann_joint, epsX=eps,
                             return_bg_ICs=True, min_eps_floor_ratio=0.0,
+                            GoH_exit_thresh=GOH_EXIT_THRESH, xmax=XMAX_JOINT,
                             phase2_form="Y", verbose=False)
     except Exception:
         return np.nan
@@ -205,11 +266,14 @@ def omega_h2_joint(mX, mY, alphaX, eps):
 
 def relic_alphaX(omega):
     """alpha_X giving Omega_c h^2 = OCH2_TARGET, from a cubic spline of
-    log(alpha_X) against log(Omega h^2) over the sampled ALPHAX; extrapolated
-    when the target lies outside the sampled range."""
+    log(alpha_X) against log(Omega h^2) over the sampled ALPHAX; NaN when the
+    target is not bracketed by the sampled range (no extrapolation)."""
     finite = np.isfinite(omega) & (omega > 0)
     if finite.sum() < 4:
         return np.nan
+    if not (omega[finite].min() <= OCH2_TARGET <= omega[finite].max()):
+        return np.nan            # crossing outside the sampled range: report
+                                 # honestly as absent instead of extrapolating
     order = np.argsort(omega[finite])                        # Omega h^2 ascending
     spline = CubicSpline(np.log(omega[finite][order]),
                          np.log(ALPHAX[finite][order]))
@@ -296,7 +360,7 @@ def load_state(path, shape, eps, backup=True):
 
         n_old = int(saved["log_mX"].size * saved["log_rv"].size)
         bak = path.with_name(f"{path.stem}_{n_old}nodes_backup.npz")
-        if backup and not bak.exists():
+        if backup and BACKUP_PREVIOUS and not bak.exists():
             shutil.copy2(path, bak)
             print(f"  {path.name}: previous run copied to {bak.name}")
 
@@ -315,9 +379,17 @@ def _save(path, eps, alpha_relic, sigmav, done):
 # ---- grid runs ----------------------------------------------
 
 def _pending(done):
-    """(i, j, mX, mY) for every node still to solve."""
+    """(i, j, mX, mY) for every node still to solve.
+
+    With ONLY_RV_COLUMNS set, nodes outside those rv columns are skipped but
+    left NOT done, so they stay queued for a later run."""
+    todo = ~done
+    if ONLY_RV_COLUMNS is not None:
+        keep = np.zeros(N_RV, bool)
+        keep[list(ONLY_RV_COLUMNS)] = True
+        todo = todo & keep[None, :]
     return [(i, j, float(mX_grid[i, j]), float(mY_grid[i, j]))
-            for i, j in zip(*np.where(~done))]
+            for i, j in zip(*np.where(todo))]
 
 
 def _run_pool(fn, tasks, ncores, desc, on_result, save):
@@ -341,6 +413,7 @@ def run_secluded(ncores):
     file with eps as the leading array axis."""
     path = OUT_DIR / "relic_grid_vP_eps_secluded.npz"
     eps = np.array(EPS_SECLUDED)
+    _set_alphax("secluded")
     alpha_relic, sigmav, done = load_state(path, (len(eps), N_MX, N_RV), eps)
 
     def on_result(res):
@@ -358,6 +431,7 @@ def run_secluded(ncores):
 def run_joint(eps, ncores):
     """alpha_X_relic and <sigma v> at a single eps via the joint solver."""
     path = OUT_DIR / f"relic_grid_vP_eps{eps:.0e}.npz"
+    _set_alphax(eps)
     alpha_relic, sigmav, done = load_state(path, (N_MX, N_RV), eps)
 
     def on_result(res):
@@ -376,15 +450,20 @@ def run_joint(eps, ncores):
 def dry_run():
     """Grid, what each output would reuse, and the wall-clock estimate."""
     todo = 0
-    for path, eps, shape in (
-            (OUT_DIR / "relic_grid_vP_eps_secluded.npz",
-             np.array(EPS_SECLUDED), (len(EPS_SECLUDED), N_MX, N_RV)),
-            *((OUT_DIR / f"relic_grid_vP_eps{e:.0e}.npz", e, (N_MX, N_RV))
-              for e in EPS_JOINT)):
+    outputs = [(OUT_DIR / f"relic_grid_vP_eps{e:.0e}.npz", e, (N_MX, N_RV))
+               for e in EPS_JOINT]
+    if RUN_SECLUDED:
+        outputs.insert(0, (OUT_DIR / "relic_grid_vP_eps_secluded.npz",
+                           np.array(EPS_SECLUDED), (len(EPS_SECLUDED), N_MX, N_RV)))
+    for path, eps, shape in outputs:
+        _set_alphax(eps if np.isscalar(eps) else "secluded")
         alpha_relic, sigmav, done = load_state(path, shape, eps, backup=False)
-        left = int((~done).sum())
+        left = len(_pending(done))
         todo += left
-        print(f"  {path.name}: {left} of {N_VALID} nodes still to solve")
+        print(f"  {path.name}: {left} of {N_VALID} nodes still to solve"
+              + ("" if ONLY_RV_COLUMNS is None
+                 else f"  (queue restricted to rv columns {tuple(ONLY_RV_COLUMNS)}"
+                      f" = rv {', '.join(f'{10 ** log_rv[k]:.4f}' for k in ONLY_RV_COLUMNS)})"))
     per_out = SEC_PER_NODE / 3.0
     print(f"\n{todo} node-solves left ~ {todo * per_out / 3600:.1f} h serial, "
           f"{todo * per_out / 3600 / NCORES:.1f} h on {NCORES} cores "
@@ -400,15 +479,18 @@ def main():
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    axes = ", ".join(
+        ("default" if k is None else k if isinstance(k, str) else f"eps={k:g}")
+        + f" [{v[0]:g}, {v[1]:g}]" for k, v in ALPHAX_LIMS.items())
     print(f"grid: {N_MX} x {N_RV} = {N_VALID} valid (mX, mY) nodes, "
           f"mX in [{MX_LIM[0]:g}, {MX_LIM[1]:g}] GeV, rv <= {RV_MAX}  |  "
-          f"{N_ALPHAX} alpha_X in [{ALPHAX_LIM[0]:g}, {ALPHAX_LIM[1]:g}]  |  "
-          f"out -> {OUT_DIR}")
+          f"{N_ALPHAX} alpha_X, axis {axes}  |  out -> {OUT_DIR}")
     if args.dry_run:
         dry_run()
         return
     print(f"workers: {args.ncores}")
-    run_secluded(args.ncores)
+    if RUN_SECLUDED:
+        run_secluded(args.ncores)
     for eps in EPS_JOINT:
         run_joint(eps, args.ncores)
 
