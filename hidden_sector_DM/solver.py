@@ -660,6 +660,10 @@ class BoltzmannSolver:
         Gamma_switch_QSSA: float = 5e9,
         cannibal_switch_full: float = 1.0,
         SMlock_thr: float = 1.0,
+        rho_switch_thresh: float = 1.0,
+        Sdot_switch_thresh: float = np.inf,
+        enable_phase3: bool = False,
+        phase3_kw: Optional[Dict] = None,
         GoH_exit_thresh: float = 1.0,
         sv_handoff_tol: float = 1.5,
         min_eps_floor_ratio: float = 0.5,
@@ -708,6 +712,29 @@ class BoltzmannSolver:
             and the SM -> Y inverse-decay piece, in the detailed-balance
             form -Gamma_Y (n_Y - n_Y^eq(T_SM)).  If False, only the forward
             decay -Gamma_Y n_Y is kept (legacy).
+        rho_switch_thresh : float
+            Hidden-to-SM energy-density ratio at which ev_rho fires
+            (1.0 = legacy behaviour, exit at energy parity).  Lower it
+            (e.g. 0.3) to hand off early into Phase 3 (enable_phase3=True),
+            which carries the evolution through hidden domination.
+        Sdot_switch_thresh : float
+            Instantaneous SM-entropy injection rate dlnS/dN = Q/(T s Htot)
+            at which Phase 2 hands off (inf = legacy, never).  The joint
+            formulation assumes conserved comoving SM entropy; at hot
+            xi_ini near threshold the sector drains into the SM with
+            Gamma/H >~ 1 for many e-folds and the accumulated bookkeeping
+            error reaches factors of tens (ln S_corr ~ 4 measured at
+            xi_ini = 2.5, rv = 0.95) long before rho-parity.  Set ~0.05
+            together with rho_switch_thresh ~ 0.3 so the handoff happens
+            while the trajectory is still valid.
+        enable_phase3 : bool
+            When True, a run that ends at an injection/rho handoff continues
+            INTERNALLY through the entropy-injection era (Phase 3: the
+            e-fold system with live injection, dynamical T_D and full
+            chemistry); the result then carries Omega-ready yields with
+            phase_final = 3.  Cold runs (switches never fire) are untouched.
+        phase3_kw : dict, optional
+            Overrides forwarded to the Phase-3 integration.
         SMlock_thr : float
             Threshold on the SM-lock ratio Gamma_Y * n_Y^eq(T_SM)/(H * n_Y);
             crossing it triggers Phase 1.5-S.
@@ -867,6 +894,15 @@ class BoltzmannSolver:
             return G - Gamma_switch_QSSA
         ev_ann.terminal = True;  ev_ann.direction = -1
 
+        def ev_Sdot_1(t, y):
+            th = _thermo(t, y[0], 0.0, 0.0)
+            Qn = GammaY * (th['BY1'] * th['nY']
+                           - th['BY1_SM'] * th['nY_eq_SM'])
+            return Qn / (th['T'] * th['s'] * th['Htot']) - Sdot_switch_thresh
+        ev_Sdot_1.terminal  = (GammaY > 0
+                               and np.isfinite(Sdot_switch_thresh))
+        ev_Sdot_1.direction = +1
+
         # === Phase 1.5-D: QSSA (muY = 0) ===
         def rhs_QSSA(t, y):
             lnxi, muX = y
@@ -928,6 +964,15 @@ class BoltzmannSolver:
         def ev_SMlock_in_P15(t, y):
             return sm_lock_ratio(t, y[0], y[1], 0.0) - SMlock_thr
         ev_SMlock_in_P15.terminal = True;  ev_SMlock_in_P15.direction = +1
+
+        def ev_Sdot_15(t, y):
+            th = _thermo(t, y[0], y[1], 0.0)
+            Qn = GammaY * (th['BY1'] * th['nY']
+                           - th['BY1_SM'] * th['nY_eq_SM'])
+            return Qn / (th['T'] * th['s'] * th['Htot']) - Sdot_switch_thresh
+        ev_Sdot_15.terminal  = (GammaY > 0
+                                and np.isfinite(Sdot_switch_thresh))
+        ev_Sdot_15.direction = +1
 
         # === Phase 1.5-S: SM-locked, xi=1 pinned ===
         # Total g_*, g_*S (SM + hidden) are needed in rhs_SMlock.  Direct
@@ -1184,15 +1229,31 @@ class BoltzmannSolver:
                                   np.log10(xf * 0.999), n_points)
 
             if phase == 1:
+                if (GammaY > 0 and np.isfinite(Sdot_switch_thresh)
+                        and ev_Sdot_1(x0, y_eq) >= 0.0):
+                    converged = True;  x_converged = x0
+                    if verbose:
+                        print(f"      Phase 1 exit (dlnS/dN, initial) "
+                              f"at x={x0:.2f}")
+                    break
                 sol = solve_ivp(rhs_eq, (x0, xf), y_eq, t_eval=xs,
                                 rtol=rtol_value, atol=1e-12, method='Radau',
-                                max_step=1, events=[ev_ann])
+                                max_step=1, events=[ev_ann, ev_Sdot_1])
                 if not sol.success:
                     break
                 x_all.extend(sol.t);  lnxi_all.extend(sol.y[0])
                 muX_all.extend([0.0] * len(sol.t))
                 muY_all.extend([0.0] * len(sol.t))
 
+                if (len(sol.t_events) > 1 and len(sol.t_events[1]) > 0
+                        and (len(sol.t_events[0]) == 0
+                             or sol.t_events[1][0] <= sol.t_events[0][0])):
+                    x0 = sol.t_events[1][0]
+                    converged = True;  x_converged = x0
+                    if verbose:
+                        print(f"      Phase 1 exit (dlnS/dN switch) "
+                              f"at x={x0:.2f}")
+                    break
                 fired = sol.t_events and len(sol.t_events[0]) > 0
                 if fired:
                     x_ev = sol.t_events[0][0];  y_ev = sol.y_events[0][0]
@@ -1218,9 +1279,18 @@ class BoltzmannSolver:
                     x0 = sol.t[-1];  y_eq = [sol.y[0, -1]]
 
             elif phase == 1.5:
+                if (GammaY > 0 and np.isfinite(Sdot_switch_thresh)
+                        and ev_Sdot_15(x0, y_QSSA) >= 0.0):
+                    converged = True;  x_converged = x0
+                    if verbose:
+                        print(f"      Phase 1.5 exit (dlnS/dN, initial) "
+                              f"at x={x0:.2f}")
+                    break
                 events_15 = [ev_can]
                 if use_inverse_decay and GammaY > 0:
                     events_15.append(ev_SMlock_in_P15)
+                events_15.append(ev_Sdot_15)
+                sdot15_idx = len(events_15) - 1
                 sol = solve_ivp(rhs_QSSA, (x0, xf), y_QSSA, t_eval=xs,
                                 rtol=rtol_value, atol=atol_value,
                                 method='Radau', max_step=1, events=events_15)
@@ -1239,6 +1309,21 @@ class BoltzmannSolver:
                 smlock_fired = (use_inverse_decay and GammaY > 0
                                 and len(sol.t_events) > 1
                                 and len(sol.t_events[1]) > 0)
+
+                # dlnS/dN handoff wins if it fired earliest: the conserved-S
+                # bookkeeping is invalid beyond it, so neither a later
+                # cannibal switch nor SM-lock may be trusted.
+                _tev = lambda k: (sol.t_events[k][0]
+                                  if len(sol.t_events[k]) else np.inf)
+                if (len(sol.t_events[sdot15_idx]) > 0
+                        and _tev(sdot15_idx) <= min(_tev(0),
+                            _tev(1) if len(sol.t_events) > 2 else np.inf)):
+                    x0 = sol.t_events[sdot15_idx][0]
+                    converged = True;  x_converged = x0
+                    if verbose:
+                        print(f"      Phase 1.5 exit (dlnS/dN switch) "
+                              f"at x={x0:.2f}")
+                    break
 
                 if smlock_fired and (not can_fired
                         or sol.t_events[1][0] < sol.t_events[0][0]):
@@ -1333,8 +1418,24 @@ class BoltzmannSolver:
                     sv_cold_0 = (sv_swave0 <= 0.0
                                  or th_start['sv_XXYY'] / sv_swave0
                                  < sv_handoff_tol)
+                    Qn_0 = GammaY * (th_start['BY1'] * th_start['nY']
+                                     - th_start['BY1_SM'] * th_start['nY_eq_SM'])
+                    Sdot_0 = Qn_0 / (th_start['T'] * th_start['s']
+                                     * th_start['Htot'])
+                    if Sdot_0 >= Sdot_switch_thresh:
+                        # Injection already significant: the conserved-S
+                        # formulation is invalid from here on.  Hand off
+                        # regardless of muX -- the receiver
+                        # (Phase 3) carries full chemistry,
+                        # so a pre-freeze-out handoff is well-defined.
+                        converged = True
+                        x_converged = x0
+                        if verbose:
+                            print(f"      Phase 2 exit (dlnS/dN, initial) "
+                                  f"at x={x0:.2f}  Sdot={Sdot_0:.3g}")
+                        break
                     if ((GoH_start >= GoH_exit_thresh and sv_cold_0)
-                            or rho_ratio_0 >= 1.0) \
+                            or rho_ratio_0 >= rho_switch_thresh) \
                             and muX_chk > MUX_EXIT_THRESH:
                         converged = True
                         x_converged = x0
@@ -1379,9 +1480,22 @@ class BoltzmannSolver:
                         return -1.0
                     th_e = _state_thermo(t, y)
                     ratio = (th_e['Htot'] / th_e['H']) ** 2 - 1.0
-                    return ratio - 1.0
+                    return ratio - rho_switch_thresh
                 ev_rho.terminal  = True
                 ev_rho.direction = +1
+
+                def ev_Sdot(t, y):
+                    # deliberately NOT muX-gated: at hot xi_ini the injection
+                    # era precedes freeze-out, and the receiver handles
+                    # pre-freeze-out chemistry.
+                    th_e = _state_thermo(t, y)
+                    Qn = GammaY * (th_e['BY1'] * th_e['nY']
+                                   - th_e['BY1_SM'] * th_e['nY_eq_SM'])
+                    Sdot = Qn / (th_e['T'] * th_e['s'] * th_e['Htot'])
+                    return Sdot - Sdot_switch_thresh
+                ev_Sdot.terminal  = (GammaY > 0
+                                     and np.isfinite(Sdot_switch_thresh))
+                ev_Sdot.direction = +1
 
                 def _conv_event_full(t, y):
                     if x_FO is None or t < 2.0 * x_FO:
@@ -1398,6 +1512,7 @@ class BoltzmannSolver:
                 if GammaY > 0:
                     events_P2.append(ev_GoH)
                 events_P2.append(_conv_event_full)
+                events_P2.append(ev_Sdot)
 
                 sol = solve_ivp(rhs_P2, (x0, xf), y_full, t_eval=xs,
                                 rtol=rtol_value, atol=atol_value,
@@ -1436,6 +1551,13 @@ class BoltzmannSolver:
                         converged = True;  x_converged = x0
                         if verbose:
                             print(f"      Phase 2 exit (dlnxi_NR) "
+                                  f"at x={x0:.2f}")
+                        break
+                    if (len(sol.t_events) > conv_idx + 1
+                            and len(sol.t_events[conv_idx + 1]) > 0):
+                        converged = True;  x_converged = x0
+                        if verbose:
+                            print(f"      Phase 2 exit (dlnS/dN switch) "
                                   f"at x={x0:.2f}")
                         break
 
@@ -1500,6 +1622,36 @@ class BoltzmannSolver:
             'GammaY': GammaY,
             'eps_therm': eps_therm,
         }
+
+        # === Phase 3: entropy-injection era, integrated internally ===
+        # Trigger decided from the FINAL state: the run ended at an
+        # injection handoff iff dlnS/dN or the rho ratio sits at its switch
+        # threshold there.  (Phase 3 currently runs the
+        # Phase-3 integrator (equivalence to the standalone reference
+        # verified bit-identical 2026-10-09 before the remnant was removed).
+        if enable_phase3 and GammaY > 0 and phase != '1.5S' and len(x_arr):
+            th_e3 = _thermo(x_arr[-1],
+                            float(np.log(max(xi_arr[-1], 1e-300))),
+                            float(muX_arr[-1]), float(muY_arr[-1]))
+            Qn_e3 = GammaY * (th_e3['BY1'] * th_e3['nY']
+                              - th_e3['BY1_SM'] * th_e3['nY_eq_SM'])
+            Sdot_e3 = Qn_e3 / (th_e3['T'] * th_e3['s'] * th_e3['Htot'])
+            rho_e3 = (th_e3['Htot'] / th_e3['H']) ** 2 - 1.0
+            if (Sdot_e3 >= 0.999 * Sdot_switch_thresh
+                    or rho_e3 >= 0.999 * rho_switch_thresh):
+                _p3_ics = {'x': x_arr, 'xi': xi_arr, 'YX': YX_arr,
+                           'YY': YY_arr, 'T': T_arr, 'TD': TD_arr}
+                p3 = self._phase3_injection_era(
+                    epsX=epsX, bg_ICs=_p3_ics, **(phase3_kw or {}))
+                result['phase_final'] = 3
+                result['P3'] = p3
+                result['YX_relic'] = float(p3['YX_final'])
+                result['SRatio'] = float(p3['SRatio'])
+                if verbose:
+                    print(f"      Phase 3 (injection era): "
+                          f"YX_relic={p3['YX_final']:.6e}  "
+                          f"SRatio={p3['SRatio']:.4f}")
+
         if return_bg_ICs:
             result['bg_ICs'] = {
                 'x': x_arr, 'xi': xi_arr, 'YX': YX_arr, 'YY': YY_arr,
@@ -2281,6 +2433,367 @@ class BoltzmannSolver:
                 'SoverSi': SoverSi,
                 'xi':      xi_out,
             }
+
+    # =============================================================
+    #  Phase 3 — entropy-injection era (joint-solver continuation)
+    # =============================================================
+    def _phase3_injection_era(
+        self,
+        epsX: float,
+        bg_ICs: Dict[str, np.ndarray],
+        Nmax: float = 80.0,
+        rtol_value: float = 1e-8,
+        atol_value: float = 1e-10,
+        eps_S: float = 1e-4,
+        eps_freeze: float = 1e-4,
+        GoH_min_done: float = 10.0,
+        zY_SM_dead: float = 40.0,
+        n_points: int = 400,
+        S_corr_max: float = 2.0,
+        eq_qssa_switch: float = 5e9,
+        qssa_full_switch: float = 1.0,
+        mu_pin_tol: float = 1e-2,
+        traj_has_decay: bool = True,
+        verbose: bool = False,
+    ) -> Dict[str, Any]:
+        """Phase 3 of the joint workflow: coupled evolution through hidden-sector
+        energy domination (docs/solve_background_full_derivation.tex, v2).
+
+        Replaces the stitched `ev_rho` exit -> `solve_background` treatment
+        whose seam produces the Omega(alpha) step at hot/near-threshold
+        points (xi_ini >~ 2, rv -> 1).  Evolves, in e-folds N = ln a,
+
+            y = [ln T, ln xi, mubar_X, mubar_Y, ln(S/S0)]
+
+        with the SM temperature dynamical (entropy injection
+        S' = Q/(T s H), Q the same net decay/inverse-decay flux integrand
+        as `solve_background`, fed the live Y_Y), the hidden temperature
+        set by the hidden-sector energy balance (explicit d ln xi equation
+        with positive-definite denominator T_D * D_cal), and the full
+        phase-2 chemistry (2<->2 both directions at <sigma v>(T_D), the
+        three 3->2 channels, decay + inverse decay).  All collision-term
+        conventions (rev, ratio_D, ratio_SM, ann_sym, clips) are ported
+        verbatim from the phase-2 Y-form RHS.
+
+        Termination (both required; referee-corrected):
+          (1) rho_Y/rho_SM < eps_S  AND  (Gamma_Y/H > GoH_min_done
+              or m_Y/T > zY_SM_dead)   -- future injection negligible;
+          (2) |C_hat_X - S'| < eps_freeze -- d ln Y_X/dN frozen
+              (NOT "mubar_X frozen", which never happens: it grows ~ 2 z_X).
+        A planned cold-handback event to `solve_background` (see derivation
+        note Sec. 7) is deliberately NOT implemented in v1.
+
+        v1 limitations: gamma = 1 decay convention (project-wide);
+        requires the physical Y yield (`traj_has_decay=True`, the joint
+        workflow); validity floor T >> 2 MeV.
+        """
+        cosmo = self.cosmo
+        model = self.model
+        mX, mY = model.mX, model.mY
+        gX, gY = model.gX, model.gY
+        inc_aX = model.include_antiparticlesX
+        inc_aY = model.include_antiparticlesY
+        ann_sym = 0.5 if inc_aX else 1.0
+
+        if not traj_has_decay:
+            raise ValueError(
+                "Phase 3 requires the physical Y yield "
+                "(traj_has_decay=True, i.e. a joint-solver trajectory). "
+                "For secluded (no-decay bookkeeping) trajectories use "
+                "solve_background(correct_Y_decay=True).")
+
+        GammaY = model.decay_width_to_SM(epsX)
+        sv_YXX_XX = model.sigmav2_YXX_to_XX() * ann_sym
+        sv_YYX_YX = model.sigmav2_YYX_to_YX()
+
+        # --- initial conditions from the shared handoff contract ---
+        T0  = float(bg_ICs['T'][-1])
+        TD0 = float(bg_ICs['TD'][-1])
+        xi0 = float(bg_ICs['xi'][-1])
+        YX0 = float(bg_ICs['YX'][-1])
+        YY0 = float(bg_ICs['YY'][-1])
+        if abs(TD0 - xi0 * T0) > 1e-6 * max(TD0, 1e-300):
+            import warnings
+            warnings.warn("bg_ICs inconsistent: TD != xi*T at handoff "
+                          f"({TD0:.6e} vs {xi0 * T0:.6e})")
+        # --- Correct ICs for SM-entropy injected DURING the Boltzmann
+        # phase (identical to solve_background's correct_Y_decay block for
+        # traj_has_decay=True): joint-phase yields are normalised to a
+        # fictitious conserved s, so the true handoff state has
+        # Y_i -> Y_i/S_corr and T -> T * S_corr^(1/3).  Omitting this
+        # overstates Omega by exactly S_corr (measured +22..47% at the
+        # xi=1, eps=1e-9 regression nodes before the fix).
+        S_ratio_corr = 1.0
+        if GammaY > 0:
+            x_traj, T_traj = bg_ICs['x'], bg_ICs['T']
+            xi_traj, YX_traj, YY_traj = bg_ICs['xi'], bg_ICs['YX'], bg_ICs['YY']
+            ln_S_corr = 0.0
+            for i in range(1, len(x_traj)):
+                x_mid  = 0.5 * (x_traj[i] + x_traj[i-1])
+                T_mid  = 0.5 * (T_traj[i] + T_traj[i-1])
+                xi_mid = 0.5 * (xi_traj[i] + xi_traj[i-1])
+                YY_mid = 0.5 * (YY_traj[i] + YY_traj[i-1])
+                TD_mid = xi_mid * T_mid
+                s_mid = cosmo.s_entropy(T_mid)
+                H_sm  = cosmo.hubble(T_mid)
+                rho_h = (mX * 0.5 * (YX_traj[i] + YX_traj[i-1])
+                         + mY * YY_mid) * s_mid
+                Htot_m = np.sqrt(H_sm**2 + rho_h / (3.0 * Mpl**2))
+                g_t = 1.0 + cosmo.dlngSdlnT(T_mid) / 3.0
+                dt  = (x_traj[i] - x_traj[i-1]) / (x_mid * Htot_m * g_t)
+                zY_D, zY_SMm = mY / max(TD_mid, 1e-300), mY / max(T_mid, 1e-300)
+                B1_D  = cosmo.Bfac1(zY_D, mY)
+                B1_SM = cosmo.Bfac1(zY_SMm, mY)
+                YYeq_SM = np.exp(np.clip(
+                    cosmo.ln_Yeq(zY_SMm, gY, mY, inc_aY, s_mid), -700, 700))
+                ln_S_corr += GammaY * (B1_D * YY_mid - B1_SM * YYeq_SM) \
+                    / T_mid * dt
+            S_ratio_corr = float(np.exp(ln_S_corr))
+            if S_ratio_corr > S_corr_max:
+                raise ValueError(
+                    f"bg_ICs trajectory invalid: the Boltzmann phase ran "
+                    f"through S_corr = {S_ratio_corr:.3g} of un-bookkept SM "
+                    f"entropy injection (> S_corr_max = {S_corr_max:g}).  "
+                    f"Hand off earlier (lower Sdot_switch_thresh / "
+                    f"rho_switch_thresh) instead of correcting post hoc.")
+            YX0 = YX0 / S_ratio_corr
+            YY0 = YY0 / S_ratio_corr
+            T0  = T0 * S_ratio_corr ** (1.0 / 3.0)
+            xi0 = TD0 / T0
+
+        s0_ = cosmo.s_entropy(T0)
+        muX0 = float(np.log(max(YX0, 1e-300))
+                     - cosmo.ln_Yeq(mX / TD0, gX, mX, inc_aX, s0_))
+        muY0 = float(np.log(max(YY0, 1e-300))
+                     - cosmo.ln_Yeq(mY / TD0, gY, mY, inc_aY, s0_))
+        y0 = [float(np.log(T0)), float(np.log(xi0)), muX0, muY0, 0.0]
+
+        def _state(y):
+            """All thermodynamics + per-e-fold rates from the state vector."""
+            lnT, lnxi, muX, muY, _ = y
+            T  = float(np.exp(np.clip(lnT, -75.0, 75.0)))
+            xi = float(np.exp(np.clip(lnxi, -25.0, 25.0)))
+            TD = xi * T
+            s  = cosmo.s_entropy(T)
+            zX, zY, zY_SM = mX / TD, mY / TD, mY / T
+
+            lnYeqX = cosmo.ln_Yeq(zX, gX, mX, inc_aX, s)
+            lnYeqY = cosmo.ln_Yeq(zY, gY, mY, inc_aY, s)
+            YX = float(np.exp(np.clip(muX + lnYeqX, -700, 700)))
+            YY = float(np.exp(np.clip(muY + lnYeqY, -700, 700)))
+            nX, nY = YX * s, YY * s
+
+            BX1 = cosmo.Bfac1(zX, mX);  BY1 = cosmo.Bfac1(zY, mY)
+            dBX1 = cosmo.dBfac1dT(zX, mX);  dBY1 = cosmo.dBfac1dT(zY, mY)
+            lamX = cosmo.lambda_i(zX);  lamY = cosmo.lambda_i(zY)
+
+            rho_SM = cosmo.rho_rad(T)
+            rho_h  = max(BX1 * nX + BY1 * nY, 0.0)
+            H = float(np.sqrt((rho_SM + rho_h) / (3.0 * Mpl**2)))
+
+            lnYeqY_SM = cosmo.ln_Yeq(zY_SM, gY, mY, inc_aY, s)
+            nY_eq_SM  = float(np.exp(np.clip(lnYeqY_SM, -700, 700))) * s
+            BY1_SM    = cosmo.Bfac1(zY_SM, mY)
+
+            # --- chemistry, phase-2 conventions, per e-fold ---
+            sv = model.sigmav_XX_to_YY(TD)
+            PfacN = s * sv * ann_sym / H
+            rev = float(np.exp(np.clip(2.0 * (lnYeqX + muY), -700, 700)))
+            ChatX_ann = (-PfacN * (YX - rev / YX)) if YX > 1e-300 else 0.0
+            ChatY_ann = (PfacN * (YX**2 - rev) / YY) if YY > 1e-300 else 0.0
+
+            S_3to2 = (YY**2 * model.sigmav2_YYY_to_YY(TD)
+                      + YY * YX * sv_YYX_YX
+                      + YX**2 * sv_YXX_XX)
+            ratio_D = min(float(np.exp(np.clip(-muY, -700, 700))), 1e100)
+            Chat_can = (s**2 / H) * S_3to2 * (1.0 - ratio_D)
+
+            ratio_SM = min(nY_eq_SM / nY, 1e100) if nY > 1e-300 else 1e100
+            Chat_dec = (GammaY / H) * (1.0 - ratio_SM)
+
+            ChatX = ChatX_ann
+            ChatY = ChatY_ann - Chat_can - Chat_dec
+
+            Q  = GammaY * (BY1 * nY - BY1_SM * nY_eq_SM)
+            Sp = Q / (T * s * H)
+
+            g3 = 3.0 + cosmo.dlngSdlnT(T)          # = 3 * g_tilde
+            dlnT = (Sp - 3.0) / g3
+
+            D_cal = nX * dBX1 + nY * dBY1
+            if abs(D_cal) < 1e-300:
+                D_cal = np.copysign(1e-300, D_cal)
+            num = Q / H + BX1 * nX * ChatX + BY1 * nY * ChatY \
+                + 3.0 * (nX + nY) * TD
+            dlnxi = -dlnT - num / (TD * D_cal)
+
+            return dict(T=T, TD=TD, xi=xi, s=s, H=H, YX=YX, YY=YY,
+                        nX=nX, nY=nY, rho_SM=rho_SM, rhoX=BX1 * nX,
+                        rhoY=BY1 * nY, nY_eq_SM=nY_eq_SM, zY_SM=zY_SM,
+                        ChatX=ChatX, ChatY=ChatY, Sp=Sp,
+                        dlnT=dlnT, dlnxi=dlnxi, lamX=lamX, lamY=lamY,
+                        BX1=BX1, BY1=BY1, D_cal=D_cal, Q=Q,
+                        G_ann=PfacN * YX,
+                        can_rate=(s**2 / H) * S_3to2)
+
+        def rhs(N, y):
+            st = _state(y)
+            dTD = st['dlnxi'] + st['dlnT']
+            dmuX = st['ChatX'] - st['lamX'] * dTD - 3.0
+            dmuY = st['ChatY'] - st['lamY'] * dTD - 3.0
+            return [st['dlnT'], st['dlnxi'], dmuX, dmuY, st['Sp']]
+
+        def ev_done(N, y):
+            st = _state(y)
+            m1 = st['rhoY'] / (st['rho_SM'] * eps_S) - 1.0
+            decay_over = (GammaY / st['H'] > GoH_min_done
+                          or st['zY_SM'] > zY_SM_dead)
+            m2 = -1.0 if decay_over else 1.0
+            m3 = abs(st['ChatX'] - st['Sp']) / eps_freeze - 1.0
+            return max(m1, m2, m3)
+        ev_done.terminal = True
+        ev_done.direction = -1
+
+        # ---- sub-phase ladder (derivation note, Sec. 9): near chemical
+        # equilibrium the mubar variables are machine-precision balances of
+        # gross rates >> H and the full system is uneconomically stiff --
+        # the same disease the joint solver's phase ladder cures.  Both
+        # sub-phase equations follow from the boxed (dL) + (dmu) by setting
+        # dmubar = 0; at Q = 0 the EQ form reproduces the joint Phase-1
+        # dlnxi equation (built-in regression check).
+        def _aug_eq(y3):
+            return [y3[0], y3[1], 0.0, 0.0, y3[2]]
+
+        def _aug_q(y4):
+            return [y4[0], y4[1], y4[2], 0.0, y4[3]]
+
+        def rhs_eq(N, y3):
+            st = _state(_aug_eq(y3))
+            Dt = (st['TD'] * st['D_cal']
+                  + st['BX1'] * st['nX'] * st['lamX']
+                  + st['BY1'] * st['nY'] * st['lamY'])
+            Dt = np.copysign(max(abs(Dt), 1e-300), Dt)
+            num = (3.0 * (st['BX1'] + st['TD']) * st['nX']
+                   + 3.0 * (st['BY1'] + st['TD']) * st['nY']
+                   + st['Q'] / st['H'])
+            dTD = -num / Dt
+            return [st['dlnT'], dTD - st['dlnT'], st['Sp']]
+
+        def ev_eq_end(N, y3):
+            return _state(_aug_eq(y3))['G_ann'] - eq_qssa_switch
+        ev_eq_end.terminal = True
+        ev_eq_end.direction = -1
+
+        def rhs_q(N, y4):
+            st = _state(_aug_q(y4))
+            Dt = st['TD'] * st['D_cal'] + st['BY1'] * st['nY'] * st['lamY']
+            Dt = np.copysign(max(abs(Dt), 1e-300), Dt)
+            num = (st['Q'] / st['H'] + st['BX1'] * st['nX'] * st['ChatX']
+                   + 3.0 * st['nY'] * (st['BY1'] + st['TD'])
+                   + 3.0 * st['nX'] * st['TD'])
+            dTD = -num / Dt
+            dmuX = st['ChatX'] - st['lamX'] * dTD - 3.0
+            return [st['dlnT'], dTD - st['dlnT'], dmuX, st['Sp']]
+
+        def ev_q_end(N, y4):
+            return _state(_aug_q(y4))['can_rate'] - qssa_full_switch
+        ev_q_end.terminal = True
+        ev_q_end.direction = -1
+
+        Ns_list, y5_list = [], []
+        N0 = 0.0
+        y5 = list(y0)
+        terminated = False
+        phase_N = {}
+        import time as _time
+        st_e = _state(y5)
+        if (abs(y5[2]) < mu_pin_tol and abs(y5[3]) < mu_pin_tol
+                and st_e['G_ann'] >= eq_qssa_switch):
+            ladder_phase = 'eq'
+        elif (abs(y5[3]) < mu_pin_tol
+                and st_e['can_rate'] >= qssa_full_switch):
+            ladder_phase = 'qssa'
+        else:
+            ladder_phase = 'full'
+        while N0 < Nmax:
+            _t0 = _time.time()
+            if ladder_phase == 'eq':
+                sol = solve_ivp(rhs_eq, (N0, Nmax), [y5[0], y5[1], y5[4]],
+                                method='Radau', rtol=rtol_value,
+                                atol=atol_value, events=[ev_eq_end])
+                for k in range(sol.t.shape[0]):
+                    Ns_list.append(sol.t[k])
+                    y5_list.append(_aug_eq(sol.y[:, k]))
+                N0 = float(sol.t[-1])
+                y5 = _aug_eq(sol.y[:, -1])
+                phase_N['eq_end'] = N0
+                ladder_phase = 'qssa'
+                if verbose:
+                    print(f"      [bg_full:eq] N->{N0:.2f} nfev={sol.nfev} "
+                          f"{_time.time()-_t0:.0f}s", flush=True)
+                if not sol.t_events[0].size:
+                    break
+            elif ladder_phase == 'qssa':
+                sol = solve_ivp(rhs_q, (N0, Nmax),
+                                [y5[0], y5[1], y5[2], y5[4]],
+                                method='Radau', rtol=rtol_value,
+                                atol=atol_value, events=[ev_q_end])
+                for k in range(sol.t.shape[0]):
+                    Ns_list.append(sol.t[k])
+                    y5_list.append(_aug_q(sol.y[:, k]))
+                N0 = float(sol.t[-1])
+                y5 = _aug_q(sol.y[:, -1])
+                phase_N['qssa_end'] = N0
+                ladder_phase = 'full'
+                if verbose:
+                    print(f"      [bg_full:qssa] N->{N0:.2f} nfev={sol.nfev} "
+                          f"{_time.time()-_t0:.0f}s", flush=True)
+                if not sol.t_events[0].size:
+                    break
+            else:
+                sol = solve_ivp(rhs, (N0, Nmax), y5, method='Radau',
+                                rtol=rtol_value, atol=atol_value,
+                                events=[ev_done])
+                for k in range(sol.t.shape[0]):
+                    Ns_list.append(sol.t[k])
+                    y5_list.append(list(sol.y[:, k]))
+                N0 = float(sol.t[-1])
+                terminated = bool(sol.t_events[0].size)
+                if verbose:
+                    print(f"      [bg_full:full] N->{N0:.2f} nfev={sol.nfev} "
+                          f"{_time.time()-_t0:.0f}s", flush=True)
+                break
+
+        Ns = np.array(Ns_list)
+        ys = np.array(y5_list).T
+        states = [_state(ys[:, k]) for k in range(ys.shape[1])]
+        out = {
+            'N':   Ns,
+            'T':   np.array([st['T'] for st in states]),
+            'TD':  np.array([st['TD'] for st in states]),
+            'xi':  np.array([st['xi'] for st in states]),
+            'YX':  np.array([st['YX'] for st in states]),
+            'YY':  np.array([st['YY'] for st in states]),
+            'rhoX': np.array([st['rhoX'] for st in states]),
+            'rhoY': np.array([st['rhoY'] for st in states]),
+            'rhoSM': np.array([st['rho_SM'] for st in states]),
+            'SoverS0': np.exp(ys[4]),
+            'terminated': terminated,
+            'phase_N': phase_N,
+            'min_nY_over_neqSM': float(min(
+                (st['nY'] / st['nY_eq_SM'] if st['nY_eq_SM'] > 0 else np.inf)
+                for st in states)),
+        }
+        out['S_ratio_corr'] = S_ratio_corr
+        out['YX_final'] = float(out['YX'][-1])
+        out['SRatio']   = float(out['SoverS0'][-1])
+        out['T_final']  = float(out['T'][-1])
+        if verbose:
+            print(f"  phase3: N_end = {Ns[-1]:.2f}, "
+                  f"terminated = {out['terminated']}, "
+                  f"YX_final = {out['YX_final']:.6e}, "
+                  f"SRatio = {out['SRatio']:.4f}")
+        return out
 
     # =============================================================
     #  Epsilon finder — correct DM relic abundance
