@@ -548,6 +548,10 @@ def main():
     ap.add_argument("--flavor", default=None,
                     choices=["e-mu", "mu-tau", "e-tau"],
                     help="lepton pair for --portal LiLj (default mu-tau)")
+    ap.add_argument("--only", default=None,
+                    choices=["secluded", "1e-9", "1e-10"],
+                    help="run just one output.  The three write different "
+                         "files, so they can be separate concurrent slices")
     ap.add_argument("--no-phase3", action="store_true",
                     help="legacy path: clear PHASE3_KW, as the restored "
                          "make_relic_grid_vP*.py drivers run")
@@ -562,6 +566,10 @@ def main():
                 args.flavor)
     if args.no_phase3:
         PHASE3_KW = {}
+    if args.only is not None:
+        global RUN_SECLUDED, EPS_JOINT
+        RUN_SECLUDED = args.only == "secluded"
+        EPS_JOINT = () if RUN_SECLUDED else (float(args.only),)
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     cls, _ = PORTALS[PORTAL]
