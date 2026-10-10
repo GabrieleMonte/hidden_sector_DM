@@ -68,12 +68,14 @@ the GCE notebook assumes across that gap (0.9231/0.9223/0.9226 at mX =
 near-diagonal GCE lobe from dchi2 = 6.68 to 6.17, i.e. across the 2-sigma
 threshold.  46 nodes x 8 alpha; solves measured at 113-129 s each.
 
-2026-10 Phase-3 campaign (ACTIVE -- docs/phase3_rerun_campaign.md): the
-constants below are committed in PASS-A form (eps = 1e-9, rv columns 50-66,
-secluded off, Phase 3 on via PHASE3_KW).  Workflow: phase3_preflight.py ->
-phase3_invalidate.py -> relic_phase3.sbatch, one slice at a time.  PASS B
-flips EPS_JOINT and ONLY_RV_COLUMNS as commented at each constant.  Restore
-every CAMPAIGN-tagged constant when the campaign ends.
+2026-10 Phase-3 campaign (DONE -- docs/phase3_rerun_campaign.md): rv >= 0.465
+at eps = 1e-9 and rv >= 0.636 at eps = 1e-10 were re-solved with Phase 3 (the
+in-solver entropy-injection era) on, in all three xi_ini slices, confirming a
+legacy conserved-S bias of x1.07-1.20 in alpha_relic.  The constants below are
+back in their ordinary form; ALPHAX_LIMS[1e-9] is the one deliberate exception
+(see there).  The campaign's own driver config, the generated pass-B and
+stage-5 variants, and the one-job pipeline are at tag
+phase3-campaign-complete.
 
 Runs on `multiprocessing.Pool`, one node per task, `-n/--ncores` workers.
 State is a per-node boolean mask rewritten every CHECKPOINT_EVERY completions,
@@ -105,10 +107,8 @@ from hidden_sector_DM.HiddenSectorDM import (
 # ---- configuration ---------------------------------------------------
 
 OCH2_TARGET  = 0.12
-EPS_JOINT    = (1e-9,)                   # CAMPAIGN PASS A; PASS B: (1e-10,).
-                                         # Restore (1e-9, 1e-10) after the campaign.
-RUN_SECLUDED = False                     # CAMPAIGN: secluded slices are not rerun;
-                                         # restore True after the campaign.
+EPS_JOINT    = (1e-9, 1e-10)             # joint-solver epsilons
+RUN_SECLUDED = True                      # also run the secluded slices
 EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three; rv=0.95 is
                                          # masked NaN in the output (solver does not
                                          # converge there for alpha >~ 0.05)
@@ -121,21 +121,19 @@ N_MX, N_RV, N_ALPHAX = 46, 67, 8         # coarse (mX, rv) mesh; alpha_X per nod
                                          # 67 wide, and 67 does not embed in 34, so
                                          # reverting would make load_state discard it
                                          # and re-solve all 1053 nodes.
-ONLY_RV_COLUMNS = tuple(range(50, 67))   # CAMPAIGN PASS A: rv >= 0.465.  PASS B:
-                                         # tuple(range(57, 67)), rv >= 0.636.
-                                         # Restore None after the campaign.
+ONLY_RV_COLUMNS = None                   # None = queue every rv column
 ALPHAX_LIMS = {                          # per-output alpha_X axis; load_state checks it, so
     None:        (2e-5, 2e-2),           # changing an entry resets that output's file.
-    1e-9:        (2e-5, 1.0),            # CAMPAIGN: corrected crossings move UP (x1.04-
-                                         # 3.55); phase3_invalidate.py swaps the axis
-                                         # stored in the files so load_state keeps the
-                                         # finished low-rv columns.  KEEP after campaign.
+    1e-9:        (2e-5, 1.0),            # KEEP.  Was (2e-5, 2e-2); the Phase-3 campaign
+                                         # moved crossings up to 1.6e-2 and the stored
+                                         # files now carry THIS axis.  load_state compares
+                                         # it exactly, so narrowing it again would reset
+                                         # every eps=1e-9 output.
     1e-10:       (2e-5, 1.0),            # 1e-10 and secluded need alpha > 2e-2 at rv >= 0.87
     "secluded":  (2e-5, 1.0),            # (the old secluded file EXTRAPOLATED 78 such nodes);
 }                                        # capped at 1 as for 1e-10. None = other joint eps
 
-SOLVE_TIMEOUT = 7200                     # s; CAMPAIGN (was 2700): Phase-3 nodes observed
-                                         # up to ~6200 s at rtol 1e-8
+SOLVE_TIMEOUT = 2700                     # s; the near-degenerate corner is stiff
 GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y/H (2026-09 audit:
                                          # gated handoffs bias Omega by 1.15-3.2x, smoothly in rv)
 XMAX_JOINT = 5e3                         # converged to <0.3% vs 1.5e4 at both rv extremes
@@ -145,13 +143,13 @@ SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2,
                                          # 1e-6 solves those in ~1-6 min with identical
                                          # handoffs and Omega to 0.03% (2026-09 probe)
 
-PHASE3_KW = dict(rho_switch_thresh=0.3,  # CAMPAIGN: hand the joint solve to Phase 3 (the
-                 Sdot_switch_thresh=0.05,  # in-solver entropy-injection era) when rho_D/
-                 enable_phase3=True,     # rho_SM or dlnS/dN crosses these thresholds.
-                 phase3_kw=dict(rtol_value=1e-6))  # Phase-3 default is 1e-8; Omega is
-                                         # rtol-stable over 1e-6..1e-8 (validation D) and
-                                         # preflight P2 re-checks it on a live node.
-                                         # Restore PHASE3_KW = {} after the campaign.
+PHASE3_KW = {}                           # Phase 3 (the in-solver entropy-injection
+                                         # era) is opt-in; the 2026-10 campaign ran it
+                                         # with rho_switch_thresh=0.3, Sdot_switch_
+                                         # thresh=0.05, enable_phase3=True and
+                                         # phase3_kw=dict(rtol_value=1e-6).  See
+                                         # docs/phase3_rerun_campaign.md and tag
+                                         # phase3-campaign-complete.
 
 NCORES = 4                               # default worker count; -n overrides
 CHECKPOINT_EVERY = 8                     # completed nodes between saves
