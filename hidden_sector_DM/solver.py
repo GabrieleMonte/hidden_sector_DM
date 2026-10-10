@@ -2313,7 +2313,17 @@ class BoltzmannSolver:
             return np.pi**2 / 30.0 * cosmo.gstar(T) * T**4
 
         def ode_system(N, y):
-            T    = T0 * np.exp(np.clip(y[0], -50, 50))
+            # Clip y[0] ONCE and reuse it: it sets both T here and xi_now below.
+            # Left unclipped in xi_now, a trial state far outside the physical
+            # range sends exp(-2N - y[0]) to +inf, hence T_h -> inf and the
+            # n_Xeq/n_Yeq ratio -> NaN, so the Jacobian goes non-finite and
+            # Radau's lu_factor raises "array must not contain infs or NaNs".
+            # num_jac does probe that far: its finite-difference factor grows
+            # without bound on a component with near-zero sensitivity, which is
+            # what small alphaX produces here.  For |y[0]| <= 50 this is a no-op,
+            # so no converged trajectory changes.
+            lnT_rel = np.clip(y[0], -50, 50)
+            T    = T0 * np.exp(lnT_rel)
             rhoY = rhoY0 * np.exp(np.clip(y[1], -700, 200))
             rhoX = rhoX0 * np.exp(np.clip(y[2], -700, 200))
 
@@ -2338,7 +2348,7 @@ class BoltzmannSolver:
             # Y is abundant.  Uses matter-cooling xi (T_h ~ a^-2) and
             # equilibrium densities at T_h.  Self-suppresses to ~0 for
             # xi <= 1 via the Boltzmann factor in (n_Xeq/n_Yeq)^2.
-            xi_now = xi0 * np.exp(-2.0 * N - y[0])
+            xi_now = xi0 * np.exp(-2.0 * N - lnT_rel)
             T_h = max(xi_now * T, 1e-30)
             n_Xeq_h = cosmo.neq_MB(mX / T_h, gX, mX, include_antiparticlesX)
             n_Yeq_h = cosmo.neq_MB(mY / T_h, gY, mY, include_antiparticlesY)
