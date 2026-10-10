@@ -1239,8 +1239,11 @@ class BoltzmannSolver:
                 sol = solve_ivp(rhs_eq, (x0, xf), y_eq, t_eval=xs,
                                 rtol=rtol_value, atol=1e-12, method='Radau',
                                 max_step=1, events=[ev_ann, ev_Sdot_1])
-                if not sol.success:
-                    break
+                if not sol.success or len(sol.t) == 0:
+                    break           # len 0: a terminal event fired before the
+                                    # first t_eval point, so scipy leaves
+                                    # sol.t/sol.y as empty lists and sol.y[0]
+                                    # would raise IndexError
                 x_all.extend(sol.t);  lnxi_all.extend(sol.y[0])
                 muX_all.extend([0.0] * len(sol.t))
                 muY_all.extend([0.0] * len(sol.t))
@@ -1294,8 +1297,11 @@ class BoltzmannSolver:
                 sol = solve_ivp(rhs_QSSA, (x0, xf), y_QSSA, t_eval=xs,
                                 rtol=rtol_value, atol=atol_value,
                                 method='Radau', max_step=1, events=events_15)
-                if not sol.success:
-                    break
+                if not sol.success or len(sol.t) == 0:
+                    break           # len 0: a terminal event fired before the
+                                    # first t_eval point, so scipy leaves
+                                    # sol.t/sol.y as empty lists and sol.y[0]
+                                    # would raise IndexError
                 x_all.extend(sol.t)
                 lnxi_all.extend(sol.y[0]);  muX_all.extend(sol.y[1])
                 muY_all.extend([0.0] * len(sol.t))
@@ -1383,11 +1389,14 @@ class BoltzmannSolver:
                                 t_eval=xs_local,
                                 rtol=rtol_value, atol=1e-10,
                                 method='Radau', max_step=1)
-                if not sol.success:
-                    if verbose:
+                if not sol.success or len(sol.t) == 0:
+                    if verbose and not sol.success:
                         print(f"      Phase 1.5S FAILED at x={x0:.3f}: "
                               f"{sol.message}")
-                    break
+                    break           # len 0: a terminal event fired before the
+                                    # first t_eval point, so scipy leaves
+                                    # sol.t/sol.y as empty lists and sol.y[0]
+                                    # would raise IndexError
                 x_all.extend(sol.t)
                 lnxi_all.extend([0.0] * len(sol.t))
                 muX_all.extend(sol.y[0])
@@ -1517,8 +1526,11 @@ class BoltzmannSolver:
                 sol = solve_ivp(rhs_P2, (x0, xf), y_full, t_eval=xs,
                                 rtol=rtol_value, atol=atol_value,
                                 method='Radau', max_step=1, events=events_P2)
-                if not sol.success:
-                    break
+                if not sol.success or len(sol.t) == 0:
+                    break           # len 0: a terminal event fired before the
+                                    # first t_eval point, so scipy leaves
+                                    # sol.t/sol.y as empty lists and sol.y[0]
+                                    # would raise IndexError
                 x_all.extend(sol.t)
                 lnxi_all.extend(sol.y[0])
                 if phase2_form == 'Y':
