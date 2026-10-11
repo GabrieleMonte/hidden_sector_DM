@@ -1,8 +1,7 @@
-"""Relic-abundance grid for any portal, on the shared (mX, rv) mesh.
+"""Relic-abundance grid for any vector portal, on the shared (mX, rv) mesh.
 
     python GCE/scripts/make_relic_grid.py --portal BL --dry-run
     python GCE/scripts/make_relic_grid.py --portal LiLj --xi-ini 2.5 -n 128
-    python GCE/scripts/make_relic_grid.py --portal hP --only 1e-9 -n 128
     python GCE/scripts/make_relic_grid.py --portal vP --no-phase3     # legacy path
 
 Generalises make_relic_grid_vP*.py, which this reproduces exactly for
@@ -10,23 +9,13 @@ Generalises make_relic_grid_vP*.py, which this reproduces exactly for
 only the output file name differs).  The mass grid is deliberately identical
 across portals so the slices can be compared node for node.
 
-THE FOUR VECTOR PORTALS SHARE THE HIDDEN SECTOR.  sigmav_XX_to_YY, the 3->2
+ALL FOUR VECTOR PORTALS SHARE THE HIDDEN SECTOR.  sigmav_XX_to_YY, the 3->2
 cannibal rates and the freeze-out are byte-identical between VectorPortal,
 BLPortal, LiLjPortal and BaryonPortal -- the classes differ only in
-decay_width_to_SM, i.e. in Gamma_Y and in the branching ratios.  So those four
-relic grids differ ONLY through mediator decay: the entropy injected when Y
-decays, and whether Phase 3 engages.  At a fixed epsX the widths sit within a
-factor ~3-14 of the vector portal, so the epsX axis below is in range for all.
-
-THE HIGGS PORTAL (hP) DOES NOT.  It is a different hidden sector, not another
-Gamma_Y: X is a Majorana fermion and Y a real scalar (gY = 1, not 3), the
-annihilation is XX -> phi phi through scalar exchange, and the 3->2 rates come
-from their own tree-level Deltas.  Its swept coupling is `lam`, not alphaX --
-same axis, different quantity.  epsX here is the Higgs mixing angle sin(theta),
-not a kinetic mixing, and Gamma_phi comes from HDECAY via hidden_sector_DM/
-phi_decay (mY >= 5 GeV on this mesh, so only the HDECAY regime is used).
-An hP node is therefore NOT comparable to a vector-portal node at the same
-(mX, rv) in the way the four vector grids are comparable to each other.
+decay_width_to_SM, i.e. in Gamma_Y and in the branching ratios.  So the relic
+grids differ ONLY through mediator decay: the entropy injected when Y decays,
+and whether Phase 3 engages.  At a fixed epsX the widths sit within a factor
+~3-14 of the vector portal, so the epsX axis below is in range for all of them.
 
 The branching ratios, which the GCE spectra downstream do care about, are not
 similar at all: LiLj(mu-tau) is 50% neutrinos and has no hadronic channel,
@@ -60,7 +49,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from hidden_sector_DM.HiddenSectorDM import (
-    BaryonPortal, BLPortal, BoltzmannSolver, Cosmology, HiggsPortal, LiLjPortal,
+    BaryonPortal, BLPortal, BoltzmannSolver, Cosmology, LiLjPortal,
     VectorPortal, rhoc, s0_cosmo,
 )
 
@@ -78,23 +67,9 @@ PORTALS = {
     "BL":   (BLPortal,      {"g_BL":   1.0, "m_ZBL":   1.0e4}),
     "LiLj": (LiLjPortal,    {"g_LiLj": 1.0, "m_ZLiLj": 1.0e4, "flavor": "mu-tau"}),
     "B":    (BaryonPortal,  {"g_B":    1.0, "m_ZB":    1.0e4}),
-    "hP":   (HiggsPortal,   {}),
 }
 _G_KEY = {"BL": "g_BL", "LiLj": "g_LiLj", "B": "g_B"}       # --g-portal target
 _M_KEY = {"BL": "m_ZBL", "LiLj": "m_ZLiLj", "B": "m_ZB"}    # --m-mediator target
-
-# The coupling swept on the alpha_X axis.  The vector portals take alphaX =
-# g_X^2 / 4pi; the Higgs portal is parameterised by the Yukawa-like `lam`,
-# which sets lam_s = lam_p.  The axis itself is shared, but the two are
-# different quantities -- do not read an hP crossing as an alpha_X.
-_COUPLING_KEY = {"vP": "alphaX", "BL": "alphaX", "LiLj": "alphaX",
-                 "B": "alphaX", "hP": "lam"}
-
-# Hidden-sector content, where a portal departs from the vector-portal
-# convention of a Dirac X and a spin-1 Y.  The Higgs portal's X is a Majorana
-# fermion (its own antiparticle) and its Y a real scalar (one degree of
-# freedom), per the HiggsPortal docstring in hidden_sector_DM/model.py.
-_HIDDEN_KW = {"hP": dict(gY=1, include_antiparticlesX=False)}
 
 # Set from the command line in main(), before any worker is forked.
 PORTAL       = "vP"
@@ -236,17 +211,11 @@ def timed_solve(method, **kwargs):
 
 
 def _make_model(mX, mY, alphaX, antiY=False):
-    """The portal object for one grid node, under the active configuration.
-
-    `alphaX` is the value on the swept coupling axis; which keyword it binds
-    to depends on the portal (see _COUPLING_KEY).
-    """
+    """The portal object for one grid node, under the active configuration."""
     cls, _ = PORTALS[PORTAL]
-    kw = dict(gX=2, gY=3, include_antiparticlesX=True)
-    kw.update(_HIDDEN_KW.get(PORTAL, {}))
-    kw[_COUPLING_KEY[PORTAL]] = alphaX
-    return cls(mX=mX, mY=mY, xi_ini=XI_INI, include_antiparticlesY=antiY,
-               **kw, **PORTAL_KW)
+    return cls(mX=mX, mY=mY, gX=2, gY=3, alphaX=alphaX, xi_ini=XI_INI,
+               include_antiparticlesX=True, include_antiparticlesY=antiY,
+               **PORTAL_KW)
 
 
 def _set_portal(portal, xi_ini, g_portal=None, m_mediator=None, flavor=None):
@@ -261,7 +230,7 @@ def _set_portal(portal, xi_ini, g_portal=None, m_mediator=None, flavor=None):
     XI_INI = float(xi_ini)
 
     bits = [portal]
-    if portal not in ("vP", "hP"):
+    if portal != "vP":
         if g_portal is not None:
             PORTAL_KW[_G_KEY[portal]] = float(g_portal)
         if m_mediator is not None:
@@ -277,10 +246,7 @@ def _set_portal(portal, xi_ini, g_portal=None, m_mediator=None, flavor=None):
             if k != "flavor" and PORTAL_KW[k] != defaults[k]:
                 bits.append(f"{k}_{PORTAL_KW[k]:g}")
     elif g_portal is not None or m_mediator is not None or flavor is not None:
-        # hP has no mediator mass of its own -- phi IS the mediator, at mY --
-        # and its coupling is the swept axis, so neither flag means anything.
-        raise SystemExit(f"--g-portal/--m-mediator/--flavor do not apply to "
-                         f"--portal {portal}")
+        raise SystemExit("--g-portal/--m-mediator/--flavor do not apply to --portal vP")
     if XI_INI != 1.0:
         bits.append(f"xi_ini_{XI_INI:g}")
     TAG = "_".join(bits)
