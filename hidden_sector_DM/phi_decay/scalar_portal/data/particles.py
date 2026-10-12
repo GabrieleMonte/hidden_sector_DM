@@ -19,8 +19,10 @@ _srcdir = os.path.dirname(__file__)
 _k0_codes = {'K_S': 310, 'K_L': 130}
 _k0_names = {val: key for key, val in _k0_codes.items()}
 
+# `delim_whitespace=True` was removed in pandas 2.2; r'\s+' is its documented
+# replacement and behaves identically on this whitespace-aligned table.
 _meson_df = pandas.read_csv(os.path.join(_srcdir, 'meson_properties.dat'),
-                            delim_whitespace=True)
+                            sep=r'\s+')
 _meson_names = list(_meson_df.Name) + list(_k0_codes.keys())
 
 def _get_meson(feature, value):

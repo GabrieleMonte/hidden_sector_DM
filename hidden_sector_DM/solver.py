@@ -16,6 +16,22 @@ from .constants import Mpl, rhoc, s0_cosmo, Och2, mY_relic
 from .cosmology import Cosmology
 from .model import HiddenSectorModel
 
+# Bound on ln(yield) before exponentiating.  The yields are squared in the
+# 3->2 collision terms, so the usable ceiling is ln(sqrt(DBL_MAX)) = 354.9,
+# not ln(DBL_MAX) = 709.8: exp(700)**2 overflows, and a Python float ** raises
+# OverflowError rather than returning inf.
+#
+# Nothing physical lives up here -- a real yield is ~1e-10, not 1e154.  These
+# are runaway TRIAL states inside Radau's Newton iteration, which the
+# integrator is meant to discard by shrinking the step.  Raising from the
+# right-hand side destroys the converging solution along with them.  Clipping
+# lower only changes the magnitude of a state that is rejected either way.
+#
+# Measured cost of raising: 65% of all solves at the Higgs portal's eps=1e-10
+# (9868 OverflowErrors in 16568 solves, job 59695521), against ~1% in the
+# vector-portal campaigns, where phi is ~480x shorter-lived at the same eps.
+LN_Y_MAX = 354.0
+
 
 class BoltzmannSolver:
     """
@@ -126,8 +142,8 @@ class BoltzmannSolver:
             lnYeqX = cosmo.ln_Yeq(zX, gX, mX, include_antiparticlesX, s)
             lnYeqY = cosmo.ln_Yeq(zY, gY, mY, include_antiparticlesY, s)
             lnYX = lnYeqX + muX;  lnYY = lnYeqY + muY
-            YX = np.exp(np.clip(lnYX, -700, 700))
-            YY = np.exp(np.clip(lnYY, -700, 700))
+            YX = np.exp(np.clip(lnYX, -LN_Y_MAX, LN_Y_MAX))
+            YY = np.exp(np.clip(lnYY, -LN_Y_MAX, LN_Y_MAX))
             nX = YX * s;  nY = YY * s
 
             rho_h = max(BX1 * nX + BY1 * nY, 0.0)
@@ -164,8 +180,8 @@ class BoltzmannSolver:
             lnYeqX = cosmo.ln_Yeq(zX, gX, mX, include_antiparticlesX, s)
             lnYeqY = cosmo.ln_Yeq(zY, gY, mY, include_antiparticlesY, s)
             lnYX = lnYeqX + muX;  lnYY = lnYeqY
-            YX = np.exp(np.clip(lnYX, -700, 700))
-            YY = np.exp(np.clip(lnYY, -700, 700))
+            YX = np.exp(np.clip(lnYX, -LN_Y_MAX, LN_Y_MAX))
+            YY = np.exp(np.clip(lnYY, -LN_Y_MAX, LN_Y_MAX))
             nX = YX * s;  nY = YY * s
 
             rho_h = max(BX1 * nX + BY1 * nY, 0.0)
@@ -216,7 +232,7 @@ class BoltzmannSolver:
             g_tilde = th['g_tilde']
             nX, nY = th['nX'], th['nY']
 
-            YXeq = np.exp(np.clip(th['lnYeqX'], -700, 700))
+            YXeq = np.exp(np.clip(th['lnYeqX'], -LN_Y_MAX, LN_Y_MAX))
             sv = model.sigmav_XX_to_YY(th['TD'])
             # 2*ann_sym matches the Phase-2 form Pfac*(YX - YXeq^2/YX)
             # = 2*ann_sym * sv * s * g_tilde * YXeq * sinh(muX) / (Htot*x).
@@ -275,7 +291,7 @@ class BoltzmannSolver:
             nX, nY  = th['nX'], th['nY']
 
             Pfac = th['s'] * g_tilde / (th['Htot'] * x) * (th['sv_XXYY'] * ann_sym)
-            RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -700, 700))
+            RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -LN_Y_MAX, LN_Y_MAX))
 
             coll_X = Pfac * (YX - RXY2_YY2 / YX) if YX > 1e-300 else 0.0
             A = -coll_X + (th['lamX'] - 3.0 * g_tilde) / x
@@ -602,10 +618,10 @@ class BoltzmannSolver:
             lnYX_arr[i] = muX_arr[i] + lnYXeq_arr[i]
             lnYY_arr[i] = muY_arr[i] + lnYYeq_arr[i]
 
-        YX_arr   = np.exp(np.clip(lnYX_arr,   -700, 700))
-        YY_arr   = np.exp(np.clip(lnYY_arr,   -700, 700))
-        YXeq_arr = np.exp(np.clip(lnYXeq_arr, -700, 700))
-        YYeq_arr = np.exp(np.clip(lnYYeq_arr, -700, 700))
+        YX_arr   = np.exp(np.clip(lnYX_arr,   -LN_Y_MAX, LN_Y_MAX))
+        YY_arr   = np.exp(np.clip(lnYY_arr,   -LN_Y_MAX, LN_Y_MAX))
+        YXeq_arr = np.exp(np.clip(lnYXeq_arr, -LN_Y_MAX, LN_Y_MAX))
+        YYeq_arr = np.exp(np.clip(lnYYeq_arr, -LN_Y_MAX, LN_Y_MAX))
 
         if verbose:
             print("-" * 60)
@@ -824,8 +840,8 @@ class BoltzmannSolver:
             lnYeqX = cosmo.ln_Yeq(zX, gX, mX, inc_aX, s)
             lnYeqY = cosmo.ln_Yeq(zY, gY, mY, inc_aY, s)
             lnYX = lnYeqX + muX;  lnYY = lnYeqY + muY
-            YX = np.exp(np.clip(lnYX, -700, 700))
-            YY = np.exp(np.clip(lnYY, -700, 700))
+            YX = np.exp(np.clip(lnYX, -LN_Y_MAX, LN_Y_MAX))
+            YY = np.exp(np.clip(lnYY, -LN_Y_MAX, LN_Y_MAX))
             nX = YX * s;  nY = YY * s
 
             # n_Y^eq(T_SM); MB form, consistent with ln_Yeq
@@ -910,7 +926,7 @@ class BoltzmannSolver:
             g_tilde = th['g_tilde']
             nX, nY  = th['nX'], th['nY']
 
-            YXeq = np.exp(np.clip(th['lnYeqX'], -700, 700))
+            YXeq = np.exp(np.clip(th['lnYeqX'], -LN_Y_MAX, LN_Y_MAX))
             # 2*ann_sym matches the Phase-2 form Pfac*(YX - YXeq^2/YX)
             # = 2*ann_sym * sv * s * g_tilde * YXeq * sinh(muX) / (Htot*t).
             Pfac = (2.0 * ann_sym * th['s'] / th['Htot']
@@ -1035,11 +1051,11 @@ class BoltzmannSolver:
             zX = mX / T
             lnYeqX_tot = cosmo.ln_Yeq(zX, gX, mX, inc_aX, s_tot)
             lnYX = lnYeqX_tot + muX
-            YX   = float(np.exp(np.clip(lnYX, -700, 700)))
+            YX   = float(np.exp(np.clip(lnYX, -LN_Y_MAX, LN_Y_MAX)))
 
             sv = model.sigmav_XX_to_YY(T)
             Pfac = s_tot * g_tilde_tot / (H_tot * t) * (sv * ann_sym)
-            YXeq = float(np.exp(np.clip(lnYeqX_tot, -700, 700)))
+            YXeq = float(np.exp(np.clip(lnYeqX_tot, -LN_Y_MAX, LN_Y_MAX)))
             coll_X = Pfac * (YX - YXeq**2 / YX) if YX > 1e-300 else 0.0
 
             lamX = cosmo.lambda_i(zX)
@@ -1055,7 +1071,7 @@ class BoltzmannSolver:
             nX, nY  = th['nX'], th['nY']
 
             Pfac = th['s'] * g_tilde / (th['Htot'] * t) * (th['sv_XXYY'] * ann_sym)
-            RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -700, 700))
+            RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -LN_Y_MAX, LN_Y_MAX))
 
             coll_X = Pfac * (YX - RXY2_YY2 / YX) if YX > 1e-300 else 0.0
             A = -coll_X + (th['lamX'] - 3.0 * g_tilde) / t
@@ -1118,11 +1134,11 @@ class BoltzmannSolver:
             BY1, BY2, dBY1 = th0['BY1'], th0['BY2'], th0['dBY1']
             BY1_SM, nY_eq_SM = th0['BY1_SM'], th0['nY_eq_SM']
 
-            YX = float(np.exp(np.clip(lnYX, -700, 700)))
-            YY = float(np.exp(np.clip(lnYY, -700, 700)))
+            YX = float(np.exp(np.clip(lnYX, -LN_Y_MAX, LN_Y_MAX)))
+            YY = float(np.exp(np.clip(lnYY, -LN_Y_MAX, LN_Y_MAX)))
             nX = YX * s;  nY = YY * s
 
-            YYeq    = float(np.exp(np.clip(th0['lnYeqY'], -700, 700)))
+            YYeq    = float(np.exp(np.clip(th0['lnYeqY'], -LN_Y_MAX, LN_Y_MAX)))
             YYeq_SM = nY_eq_SM / s
 
             rho_h = max(BX1 * nX + BY1 * nY, 0.0)
@@ -1131,7 +1147,7 @@ class BoltzmannSolver:
             Pfac = s * g_tilde / (Htot * t) * (th0['sv_XXYY'] * ann_sym)
             # Single-clipped reverse-rate exp to preserve tiny YXeq/YYeq ratio.
             rev = float(np.exp(np.clip(
-                2.0 * th0['lnRXY'] + 2.0 * lnYY, -700, 700)))
+                2.0 * th0['lnRXY'] + 2.0 * lnYY, -LN_Y_MAX, LN_Y_MAX)))
             coll_X      = Pfac * (YX - rev / YX) if YX > 1e-300 else 0.0
             coll_Y_2to2 = Pfac * (YX ** 2 - rev) / YY if YY > 1e-300 else 0.0
 
@@ -1606,10 +1622,10 @@ class BoltzmannSolver:
             lnYYeq_arr[i] = cosmo.ln_Yeq(zY_arr[i], gY, mY, inc_aY, si)
             lnYX_arr[i] = muX_arr[i] + lnYXeq_arr[i]
             lnYY_arr[i] = muY_arr[i] + lnYYeq_arr[i]
-        YX_arr   = np.exp(np.clip(lnYX_arr,   -700, 700))
-        YY_arr   = np.exp(np.clip(lnYY_arr,   -700, 700))
-        YXeq_arr = np.exp(np.clip(lnYXeq_arr, -700, 700))
-        YYeq_arr = np.exp(np.clip(lnYYeq_arr, -700, 700))
+        YX_arr   = np.exp(np.clip(lnYX_arr,   -LN_Y_MAX, LN_Y_MAX))
+        YY_arr   = np.exp(np.clip(lnYY_arr,   -LN_Y_MAX, LN_Y_MAX))
+        YXeq_arr = np.exp(np.clip(lnYXeq_arr, -LN_Y_MAX, LN_Y_MAX))
+        YYeq_arr = np.exp(np.clip(lnYYeq_arr, -LN_Y_MAX, LN_Y_MAX))
 
         if verbose:
             print(f"      phase_final={phase}  x_final={x_arr[-1]:.2f}  "
@@ -1747,7 +1763,7 @@ class BoltzmannSolver:
             s = (2.0 * np.pi**2 / 45.0) * gS * T**3
             zX = mX / T
             return float(np.exp(np.clip(
-                cosmo.ln_Yeq(zX, gX, mX, inc_aX, s), -700, 700)))
+                cosmo.ln_Yeq(zX, gX, mX, inc_aX, s), -LN_Y_MAX, LN_Y_MAX)))
 
         def rhs(x, y):
             T = mX / x
@@ -1803,7 +1819,7 @@ class BoltzmannSolver:
                     cosmo.ln_Yeq(zY_arr[i], gY, mY, inc_aY,
                                  (2.0 * np.pi**2 / 45.0)
                                  * gstar_tot(T_arr[i])[1] * T_arr[i]**3),
-                    -700, 700)))
+                    -LN_Y_MAX, LN_Y_MAX)))
                 for i in range(len(x_arr))])
             result['bg_ICs'] = {
                 'x':  x_arr,
@@ -1886,8 +1902,8 @@ class BoltzmannSolver:
             lnYeqY = cosmo.ln_Yeq(zY, gY, mY, include_antiparticlesY, s)
             lnYX = lnYeqX + muX;  lnYY = lnYeqY + muY
 
-            YX = np.exp(np.clip(lnYX, -700, 700))
-            YY = np.exp(np.clip(lnYY, -700, 700))
+            YX = np.exp(np.clip(lnYX, -LN_Y_MAX, LN_Y_MAX))
+            YY = np.exp(np.clip(lnYY, -LN_Y_MAX, LN_Y_MAX))
             nX = YX * s;  nY = YY * s
 
             rho_h = max(BX1 * nX + BY1 * nY, 0.0)
@@ -1937,7 +1953,7 @@ class BoltzmannSolver:
             nX, nY  = th['nX'], th['nY']
 
             Pfac = th['s'] * g_tilde / (th['Htot'] * x) * (th['sv_XXYY'] * ann_sym)
-            RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -700, 700))
+            RXY2_YY2 = np.exp(np.clip(2.0 * th['lnRXY'] + 2.0 * th['lnYY'], -LN_Y_MAX, LN_Y_MAX))
 
             coll_X = Pfac * (YX - RXY2_YY2 / YX) if YX > 1e-300 else 0.0
             A = -coll_X + (th['lamX'] - 3.0 * g_tilde) / x
@@ -2140,10 +2156,10 @@ class BoltzmannSolver:
             lnYX_arr[i] = muX_arr[i] + lnYXeq_arr[i]
             lnYY_arr[i] = muY_arr[i] + lnYYeq_arr[i]
 
-        YX_arr   = np.exp(np.clip(lnYX_arr,   -700, 700))
-        YY_arr   = np.exp(np.clip(lnYY_arr,   -700, 700))
-        YXeq_arr = np.exp(np.clip(lnYXeq_arr, -700, 700))
-        YYeq_arr = np.exp(np.clip(lnYYeq_arr, -700, 700))
+        YX_arr   = np.exp(np.clip(lnYX_arr,   -LN_Y_MAX, LN_Y_MAX))
+        YY_arr   = np.exp(np.clip(lnYY_arr,   -LN_Y_MAX, LN_Y_MAX))
+        YXeq_arr = np.exp(np.clip(lnYXeq_arr, -LN_Y_MAX, LN_Y_MAX))
+        YYeq_arr = np.exp(np.clip(lnYYeq_arr, -LN_Y_MAX, LN_Y_MAX))
 
         if verbose:
             print("-" * 60)
@@ -2273,7 +2289,7 @@ class BoltzmannSolver:
                 B1_D    = cosmo.Bfac1(zY_D,  mY)
                 B1_SM   = cosmo.Bfac1(zY_SM, mY)
                 lnYYeq  = cosmo.ln_Yeq(zY_SM, gY, mY, inc_anti_Y, s_mid)
-                YYeq_SM = np.exp(np.clip(lnYYeq, -700, 700))
+                YYeq_SM = np.exp(np.clip(lnYYeq, -LN_Y_MAX, LN_Y_MAX))
 
                 # Physical Y yield used in the forward-decay term:
                 #   * traj_has_decay=False: trajectory is counterfactual
@@ -2567,7 +2583,7 @@ class BoltzmannSolver:
                 B1_D  = cosmo.Bfac1(zY_D, mY)
                 B1_SM = cosmo.Bfac1(zY_SMm, mY)
                 YYeq_SM = np.exp(np.clip(
-                    cosmo.ln_Yeq(zY_SMm, gY, mY, inc_aY, s_mid), -700, 700))
+                    cosmo.ln_Yeq(zY_SMm, gY, mY, inc_aY, s_mid), -LN_Y_MAX, LN_Y_MAX))
                 ln_S_corr += GammaY * (B1_D * YY_mid - B1_SM * YYeq_SM) \
                     / T_mid * dt
             S_ratio_corr = float(np.exp(ln_S_corr))
@@ -2601,8 +2617,8 @@ class BoltzmannSolver:
 
             lnYeqX = cosmo.ln_Yeq(zX, gX, mX, inc_aX, s)
             lnYeqY = cosmo.ln_Yeq(zY, gY, mY, inc_aY, s)
-            YX = float(np.exp(np.clip(muX + lnYeqX, -700, 700)))
-            YY = float(np.exp(np.clip(muY + lnYeqY, -700, 700)))
+            YX = float(np.exp(np.clip(muX + lnYeqX, -LN_Y_MAX, LN_Y_MAX)))
+            YY = float(np.exp(np.clip(muY + lnYeqY, -LN_Y_MAX, LN_Y_MAX)))
             nX, nY = YX * s, YY * s
 
             BX1 = cosmo.Bfac1(zX, mX);  BY1 = cosmo.Bfac1(zY, mY)
@@ -2614,20 +2630,20 @@ class BoltzmannSolver:
             H = float(np.sqrt((rho_SM + rho_h) / (3.0 * Mpl**2)))
 
             lnYeqY_SM = cosmo.ln_Yeq(zY_SM, gY, mY, inc_aY, s)
-            nY_eq_SM  = float(np.exp(np.clip(lnYeqY_SM, -700, 700))) * s
+            nY_eq_SM  = float(np.exp(np.clip(lnYeqY_SM, -LN_Y_MAX, LN_Y_MAX))) * s
             BY1_SM    = cosmo.Bfac1(zY_SM, mY)
 
             # --- chemistry, phase-2 conventions, per e-fold ---
             sv = model.sigmav_XX_to_YY(TD)
             PfacN = s * sv * ann_sym / H
-            rev = float(np.exp(np.clip(2.0 * (lnYeqX + muY), -700, 700)))
+            rev = float(np.exp(np.clip(2.0 * (lnYeqX + muY), -LN_Y_MAX, LN_Y_MAX)))
             ChatX_ann = (-PfacN * (YX - rev / YX)) if YX > 1e-300 else 0.0
             ChatY_ann = (PfacN * (YX**2 - rev) / YY) if YY > 1e-300 else 0.0
 
             S_3to2 = (YY**2 * model.sigmav2_YYY_to_YY(TD)
                       + YY * YX * sv_YYX_YX
                       + YX**2 * sv_YXX_XX)
-            ratio_D = min(float(np.exp(np.clip(-muY, -700, 700))), 1e100)
+            ratio_D = min(float(np.exp(np.clip(-muY, -LN_Y_MAX, LN_Y_MAX))), 1e100)
             Chat_can = (s**2 / H) * S_3to2 * (1.0 - ratio_D)
 
             ratio_SM = min(nY_eq_SM / nY, 1e100) if nY > 1e-300 else 1e100

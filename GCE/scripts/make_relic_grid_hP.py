@@ -53,10 +53,10 @@ from hidden_sector_DM.HiddenSectorDM import HiggsPortal           # noqa: E402
 # records the axis and compares it exactly, so changing an entry resets that
 # output's file.  See AXIS above for why this is not the vector portals'.
 LAM_LIMS = {
-    None:       (5e-3, 1.0),
-    1e-9:       (5e-3, 1.0),
-    1e-10:      (5e-3, 1.0),
-    "secluded": (5e-3, 1.0),
+    None:       (2e-5, 1.0),
+    1e-9:       (2e-5, 1.0),
+    1e-10:      (2e-5, 1.0),
+    "secluded": (2e-5, 1.0),
 }
 
 GX_MAJORANA = 2          # Majorana fermion DM: 2 spin states, no antiparticle

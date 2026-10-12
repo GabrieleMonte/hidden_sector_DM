@@ -8,7 +8,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH -c 256
 #SBATCH -q regular
-#SBATCH -t 12:00:00
+#SBATCH -t 24:00:00
 #SBATCH --open-mode=append
 #SBATCH --requeue
 #
@@ -30,7 +30,13 @@
 # The floor is one node's wall time -- a single stiff solve can run to
 # SOLVE_TIMEOUT = 7200 s -- so more than ~16 shards buys nothing.  18 nodes
 # also sits in the least contended queue bucket (the campaign measured 87
-# pending jobs at 17-32 nodes against 421 at 9-16).
+# pending jobs at 17-32 nodes against 421 at 9-16, and 17,739 at one node),
+# so this starts sooner than a single-node job would.
+#
+# 24 h, not 12: job 59695521 hit the 12 h wall with 3 of 16 shards unfinished
+# and the merge never ran.  The LN_Y_MAX fix also makes the stiff nodes grind
+# to a converged answer where they used to abort in seconds, so they take
+# longer now even when they succeed.
 #
 # Gamma_phi at epsX = 1e-9 is x0.002 the vector portal's, so phi is ~480x
 # longer-lived at the same epsX: more entropy injection, and Phase 3 engaging
