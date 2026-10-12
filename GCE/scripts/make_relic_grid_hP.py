@@ -38,6 +38,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
@@ -90,6 +92,61 @@ def _configure(xi_ini):
     base.TAG = TAG_STEM if base.XI_INI == 1.0 else f"{TAG_STEM}_xi_ini_{base.XI_INI:g}"
 
 
+def _shard_tag(tag, shard, nshards):
+    """Output stem for one shard.  Shards write separate files so they can run
+    concurrently; `--merge` folds them back into `tag`."""
+    return f"{tag}_s{shard:02d}of{nshards:02d}"
+
+
+def _apply_shard(shard, nshards):
+    """Restrict this process to every nshards-th rv column, starting at `shard`.
+
+    A stride rather than a block: the stiff nodes sit at high rv, so a block
+    split would hand one shard most of the cost.  _pending leaves the other
+    columns not-done, so each shard's file is the full grid with only its own
+    columns filled, which is what _merge relies on.
+    """
+    base.ONLY_RV_COLUMNS = list(range(shard, base.N_RV, nshards))
+    base.TAG = _shard_tag(base.TAG, shard, nshards)
+
+
+def _merge(nshards, outputs):
+    """Fold the shard files for `outputs` back into the canonical grids.
+
+    Each shard contributes only the nodes its own done_mask marks, so the
+    shards never disagree about a node.  An existing canonical file is kept as
+    the base, so nodes solved before sharding are not lost.
+    """
+    for only in outputs:
+        base.RUN_SECLUDED = only == "secluded"
+        base.EPS_JOINT = () if base.RUN_SECLUDED else (float(only),)
+        eps = np.array(base.EPS_SECLUDED) if base.RUN_SECLUDED else float(only)
+        stem = "eps_secluded" if base.RUN_SECLUDED else f"eps{float(only):.0e}"
+        path = base.OUT_DIR / f"relic_grid_{TAG_STEM}_{stem}.npz"
+
+        base._set_coupling("secluded" if base.RUN_SECLUDED else float(only))
+        shape = ((len(base.EPS_SECLUDED), base.N_MX, base.N_RV) if base.RUN_SECLUDED
+                 else (base.N_MX, base.N_RV))
+        coupling_relic, sigmav, done = base.load_state(path, shape, eps, backup=False)
+
+        added = 0
+        for k in range(nshards):
+            sp = base.OUT_DIR / f"relic_grid_{_shard_tag(TAG_STEM, k, nshards)}_{stem}.npz"
+            if not sp.exists():
+                print(f"  {stem}: shard {k} missing ({sp.name}) -- skipped")
+                continue
+            with np.load(sp, allow_pickle=True) as d:
+                take = d["done_mask"] & ~done
+                coupling_relic[..., take] = d["coupling_relic"][..., take]
+                sigmav[..., take] = d["sigmav"][..., take]
+            done |= take
+            added += int(take.sum())
+
+        base._save(path, eps, coupling_relic, sigmav, done)
+        print(f"  {path.name}: merged {added} nodes, "
+              f"{int((done & ~base.off_grid).sum())}/{base.N_VALID} done")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--xi-ini", type=float, default=1.0,
@@ -100,11 +157,26 @@ def main():
                          "files, so they can be separate concurrent slices")
     ap.add_argument("--no-phase3", action="store_true",
                     help="legacy path: clear PHASE3_KW")
+    ap.add_argument("--nshards", type=int, default=1,
+                    help="split the rv columns across this many concurrent jobs")
+    ap.add_argument("--shard", type=int, default=None,
+                    help="which shard this process runs (0 .. nshards-1)")
+    ap.add_argument("--merge", action="store_true",
+                    help="fold the shard files back into the canonical grids "
+                         "and exit; needs --nshards and --only")
     ap.add_argument("-n", "--ncores", type=int, default=base.NCORES,
                     help=f"worker processes (default {base.NCORES})")
     ap.add_argument("--dry-run", action="store_true",
                     help="report the grid, what is reusable and the ETA, then exit")
     args = ap.parse_args()
+
+    if args.nshards < 1:
+        ap.error("--nshards must be >= 1")
+    if args.shard is not None and not 0 <= args.shard < args.nshards:
+        ap.error(f"--shard must be in 0..{args.nshards - 1}")
+    if args.shard is not None and args.only is None:
+        ap.error("--shard needs --only: shards of different outputs are "
+                 "separate files and must not share one run")
 
     _configure(args.xi_ini)
 
@@ -115,6 +187,15 @@ def main():
         base.EPS_JOINT = () if base.RUN_SECLUDED else (float(args.only),)
 
     base.OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if args.merge:
+        if args.only is None:
+            ap.error("--merge needs --only")
+        _merge(args.nshards, [args.only])
+        return
+
+    if args.shard is not None:
+        _apply_shard(args.shard, args.nshards)
 
     axes = ", ".join(
         ("default" if k is None else k if isinstance(k, str) else f"eps={k:g}")
