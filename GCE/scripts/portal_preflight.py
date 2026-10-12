@@ -122,8 +122,8 @@ def main():
         DRV._set_portal(p, XI_INI)
         for eps, mX_w, rv_w in WORST:
             i, j, mX, mY = _nearest_node(mX_w, rv_w)
-            DRV._set_alphax(eps)
-            for a in DRV.ALPHAX:
+            DRV._set_coupling(eps)
+            for a in DRV.COUPLING:
                 tasks.append((p, mX, mY, float(a), eps))
                 owner.append((p, eps, mX, mY))
 
@@ -141,13 +141,13 @@ def main():
     for p in portals:
         DRV._set_portal(p, XI_INI)
         for eps, mX_w, rv_w in WORST:
-            DRV._set_alphax(eps)
+            DRV._set_coupling(eps)
             om = np.array([r.get("omega", np.nan) if "error" not in r else np.nan
                            for r, o in zip(results, owner)
                            if o[0] == p and o[1] == eps])
             secs = [r["secs"] for r, o in zip(results, owner)
                     if o[0] == p and o[1] == eps]
-            a = DRV.relic_alphaX(om)
+            a = DRV.relic_coupling(om)
             ok = bool(np.isfinite(a) and a < ALPHA_CEILING)
             passed[(p, eps)] = ok
             print(f"G2  {p:<5} eps={eps:<6g} rv=0.950 mX={mX_w:6.3f}: "

@@ -37,11 +37,11 @@ cosmo = Cosmology()
 with np.load(RELIC_DIR / "relic_grid_vP_eps1e-09.npz") as d:
     log_mX, log_rv = d["log_mX"], d["log_rv"]
     mX_grid, mY_grid = d["mX_grid"], d["mY_grid"]
-    alphaX_1e9 = d["alpha_relic"]
+    alphaX_1e9 = d["coupling_relic"]
 with np.load(RELIC_DIR / "relic_grid_vP_eps1e-10.npz") as d:
-    alphaX_1e10 = d["alpha_relic"]
+    alphaX_1e10 = d["coupling_relic"]
 with np.load(RELIC_DIR / "relic_grid_vP_eps_secluded.npz") as d:
-    alphaX_secluded = d["alpha_relic"]    # (3, N_MX, N_RV): eps = 1e-11, 5e-12, 1e-12
+    alphaX_secluded = d["coupling_relic"]    # (3, N_MX, N_RV): eps = 1e-11, 5e-12, 1e-12
 
 ALPHAX = {1e-9: alphaX_1e9, 1e-10: alphaX_1e10, 1e-11: alphaX_secluded[0],
           5e-12: alphaX_secluded[1], 1e-12: alphaX_secluded[2]}

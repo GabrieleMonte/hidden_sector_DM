@@ -24,7 +24,7 @@ charged-fermion only.
 
 PHASE 3 IS ON BY DEFAULT HERE, unlike the restored make_relic_grid_vP*.py.
 These are new grids with no legacy neighbours to match, and the 2026-10
-campaign measured the conserved-S approximation biasing alpha_relic by
+campaign measured the conserved-S approximation biasing coupling_relic by
 x1.07-1.20 at rv >= 0.465 (docs/phase3_rerun_campaign.md).  Pass --no-phase3
 to reproduce the legacy path.
 
@@ -86,13 +86,13 @@ EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three; rv=0.
 MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
 MY_LIM   = (5.0, 100.0)                  # GeV, capped from above by mX
 RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv = 1
-N_MX, N_RV, N_ALPHAX = 46, 67, 8         # coarse (mX, rv) mesh; alpha_X per node.
+N_MX, N_RV, N_COUPLING = 46, 67, 8         # coarse (mX, rv) mesh; alpha_X per node.
                                          # N_RV STAYS 67: the eps=1e-9 output is now
                                          # 67 wide, and 67 does not embed in 34, so
                                          # reverting would make load_state discard it
                                          # and re-solve all 1053 nodes.
 ONLY_RV_COLUMNS = None                   # None = queue every rv column
-ALPHAX_LIMS = {                          # per-output alpha_X axis; load_state checks it, so
+COUPLING_LIMS = {                          # per-output alpha_X axis; load_state checks it, so
     None:        (2e-5, 2e-2),           # changing an entry resets that output's file.
     1e-9:        (2e-5, 1.0),            # KEEP.  Was (2e-5, 2e-2); the Phase-3 campaign
                                          # moved crossings up to 1.6e-2 and the stored
@@ -147,16 +147,16 @@ mX_grid[off_grid] = np.nan
 mY_grid[off_grid] = np.nan
 N_VALID = int(np.isfinite(mX_grid).sum())
 
-def _set_alphax(eps=None):
+def _set_coupling(eps=None):
     """Select the alpha_X axis for the output about to run.  Pool workers fork
-    after this is called, so the module global is what node_* and relic_alphaX
+    after this is called, so the module global is what node_* and relic_coupling
     see; load_state and _save read the same one."""
-    global ALPHAX
-    ALPHAX = np.logspace(*np.log10(ALPHAX_LIMS.get(eps, ALPHAX_LIMS[None])),
-                         N_ALPHAX)
+    global COUPLING
+    COUPLING = np.logspace(*np.log10(COUPLING_LIMS.get(eps, COUPLING_LIMS[None])),
+                         N_COUPLING)
 
 
-_set_alphax()
+_set_coupling()
 
 
 # ---- Boltzmann solves ---------------------------------------------
@@ -306,10 +306,10 @@ def omega_h2_joint(mX, mY, alphaX, eps):
 
 # ---- coupling at the relic target -------------------------------
 
-def relic_alphaX(omega):
+def relic_coupling(omega):
     """The sampled coupling reproducing Omega_c h^2 = OCH2_TARGET, by
     shape-preserving interpolation of log(coupling) against log(Omega h^2)
-    over ALPHAX; NaN when the target is not bracketed (no extrapolation).
+    over COUPLING; NaN when the target is not bracketed (no extrapolation).
 
     The coupling is alpha_X for the vector portals and lam for the Higgs
     portal -- the name is from the former, which came first.
@@ -327,7 +327,7 @@ def relic_alphaX(omega):
     if finite.sum() < 4:
         return np.nan
 
-    om, ax = omega[finite], ALPHAX[finite]
+    om, ax = omega[finite], COUPLING[finite]
     if not (om.min() <= OCH2_TARGET <= om.max()):
         return np.nan            # crossing outside the sampled range: report
                                  # honestly as absent instead of extrapolating
@@ -364,16 +364,16 @@ def sigmav_swave(mX, mY, alphaX):
 def node_secluded(task):
     """(i, j) -> alpha_X_relic and <sigma v> for every eps in EPS_SECLUDED."""
     i, j, mX, mY = task
-    omega = np.array([omega_h2_secluded(mX, mY, a) for a in ALPHAX])   # (N_ALPHAX, 3)
-    alpha = np.array([relic_alphaX(omega[:, e]) for e in range(len(EPS_SECLUDED))])
+    omega = np.array([omega_h2_secluded(mX, mY, a) for a in COUPLING])   # (N_COUPLING, 3)
+    alpha = np.array([relic_coupling(omega[:, e]) for e in range(len(EPS_SECLUDED))])
     return i, j, alpha, np.array([sigmav_swave(mX, mY, a) for a in alpha])
 
 
 def node_joint(task):
     """(i, j) -> alpha_X_relic and <sigma v> at a single eps."""
     i, j, mX, mY, eps = task
-    omega = np.array([omega_h2_joint(mX, mY, a, eps) for a in ALPHAX])
-    alpha = relic_alphaX(omega)
+    omega = np.array([omega_h2_joint(mX, mY, a, eps) for a in COUPLING])
+    alpha = relic_coupling(omega)
     return i, j, alpha, sigmav_swave(mX, mY, alpha)
 
 
@@ -392,7 +392,7 @@ def _embed(old_log, new_log):
 
 
 def load_state(path, shape, eps, backup=True):
-    """(alpha_relic, sigmav, done) on the CURRENT mesh, seeded from `path` when
+    """(coupling_relic, sigmav, done) on the CURRENT mesh, seeded from `path` when
     it holds the same alpha_X axis and eps on an embeddable coarser mesh.
     `done` is per node, shape (N_MX, N_RV); off-grid nodes start done."""
     alpha = np.full(shape, np.nan)
@@ -403,7 +403,7 @@ def load_state(path, shape, eps, backup=True):
 
     with np.load(path) as saved:
         # A file must not mix Phase-3 and legacy nodes: they differ by up to
-        # x1.2 in alpha_relic (docs/phase3_rerun_campaign.md), so appending
+        # x1.2 in coupling_relic (docs/phase3_rerun_campaign.md), so appending
         # under the other setting would make one grid two physics.
         want = bool(PHASE3_KW)
         if "phase3" in saved:
@@ -424,7 +424,7 @@ def load_state(path, shape, eps, backup=True):
                 f"{'--no-phase3' if want else 'Phase 3 on (drop --no-phase3)'}, "
                 f"or pick a --portal/--xi-ini whose tag differs so this run gets "
                 f"its own file.")
-        if not (np.array_equal(saved["alphaX"], ALPHAX)
+        if not (np.array_equal(saved["coupling_axis"], COUPLING)
                 and np.array_equal(saved["eps"], np.atleast_1d(eps))):
             print(f"  {path.name}: alpha_X axis or eps changed -- starting fresh")
             return alpha, sigmav, done
@@ -443,10 +443,10 @@ def load_state(path, shape, eps, backup=True):
 
         sel = np.ix_(ix, jx)
         if alpha.ndim == 3:                            # leading eps axis
-            alpha[np.ix_(np.arange(shape[0]), ix, jx)] = saved["alpha_relic"]
+            alpha[np.ix_(np.arange(shape[0]), ix, jx)] = saved["coupling_relic"]
             sigmav[np.ix_(np.arange(shape[0]), ix, jx)] = saved["sigmav"]
         else:
-            alpha[sel] = saved["alpha_relic"]
+            alpha[sel] = saved["coupling_relic"]
             sigmav[sel] = saved["sigmav"]
         done[sel] |= old_done
 
@@ -461,9 +461,9 @@ def load_state(path, shape, eps, backup=True):
     return alpha, sigmav, done
 
 
-def _save(path, eps, alpha_relic, sigmav, done):
+def _save(path, eps, coupling_relic, sigmav, done):
     np.savez(path, log_mX=log_mX, log_rv=log_rv, mX_grid=mX_grid, mY_grid=mY_grid,
-             alphaX=ALPHAX, eps=np.atleast_1d(eps), alpha_relic=alpha_relic,
+             coupling_axis=COUPLING, eps=np.atleast_1d(eps), coupling_relic=coupling_relic,
              sigmav=sigmav, done_mask=done, xi_ini=XI_INI,
              phase3=bool(PHASE3_KW), portal=PORTAL,
              n_done=int((done & ~off_grid).sum()))
@@ -506,17 +506,17 @@ def run_secluded(ncores):
     file with eps as the leading array axis."""
     path = OUT_DIR / f"relic_grid_{TAG}_eps_secluded.npz"
     eps = np.array(EPS_SECLUDED)
-    _set_alphax("secluded")
-    alpha_relic, sigmav, done = load_state(path, (len(eps), N_MX, N_RV), eps)
+    _set_coupling("secluded")
+    coupling_relic, sigmav, done = load_state(path, (len(eps), N_MX, N_RV), eps)
 
     def on_result(res):
         i, j, a, sv = res
-        alpha_relic[:, i, j] = a
+        coupling_relic[:, i, j] = a
         sigmav[:, i, j] = sv
         done[i, j] = True
 
     _run_pool(node_secluded, _pending(done), ncores, "secluded",
-              on_result, lambda: _save(path, eps, alpha_relic, sigmav, done))
+              on_result, lambda: _save(path, eps, coupling_relic, sigmav, done))
     print(f"secluded: {np.isfinite(sigmav).sum()}/{len(eps) * N_VALID} solved "
           f"-> {path.name}")
 
@@ -524,18 +524,18 @@ def run_secluded(ncores):
 def run_joint(eps, ncores):
     """alpha_X_relic and <sigma v> at a single eps via the joint solver."""
     path = OUT_DIR / f"relic_grid_{TAG}_eps{eps:.0e}.npz"
-    _set_alphax(eps)
-    alpha_relic, sigmav, done = load_state(path, (N_MX, N_RV), eps)
+    _set_coupling(eps)
+    coupling_relic, sigmav, done = load_state(path, (N_MX, N_RV), eps)
 
     def on_result(res):
         i, j, a, sv = res
-        alpha_relic[i, j] = a
+        coupling_relic[i, j] = a
         sigmav[i, j] = sv
         done[i, j] = True
 
     tasks = [t + (eps,) for t in _pending(done)]
     _run_pool(node_joint, tasks, ncores, f"joint {eps:.0e}",
-              on_result, lambda: _save(path, eps, alpha_relic, sigmav, done))
+              on_result, lambda: _save(path, eps, coupling_relic, sigmav, done))
     print(f"joint {eps:.0e}: {np.isfinite(sigmav).sum()}/{N_VALID} solved "
           f"-> {path.name}")
 
@@ -549,8 +549,8 @@ def dry_run():
         outputs.insert(0, (OUT_DIR / f"relic_grid_{TAG}_eps_secluded.npz",
                            np.array(EPS_SECLUDED), (len(EPS_SECLUDED), N_MX, N_RV)))
     for path, eps, shape in outputs:
-        _set_alphax(eps if np.isscalar(eps) else "secluded")
-        alpha_relic, sigmav, done = load_state(path, shape, eps, backup=False)
+        _set_coupling(eps if np.isscalar(eps) else "secluded")
+        coupling_relic, sigmav, done = load_state(path, shape, eps, backup=False)
         left = len(_pending(done))
         todo += left
         print(f"  {path.name}: {left} of {N_VALID} nodes still to solve"
@@ -612,10 +612,10 @@ def main():
           f"Phase 3 {'ON' if PHASE3_KW else 'OFF'}  |  tag '{TAG}'")
     axes = ", ".join(
         ("default" if k is None else k if isinstance(k, str) else f"eps={k:g}")
-        + f" [{v[0]:g}, {v[1]:g}]" for k, v in ALPHAX_LIMS.items())
+        + f" [{v[0]:g}, {v[1]:g}]" for k, v in COUPLING_LIMS.items())
     print(f"grid: {N_MX} x {N_RV} = {N_VALID} valid (mX, mY) nodes, "
           f"mX in [{MX_LIM[0]:g}, {MX_LIM[1]:g}] GeV, rv <= {RV_MAX}  |  "
-          f"{N_ALPHAX} alpha_X, axis {axes}  |  out -> {OUT_DIR}")
+          f"{N_COUPLING} alpha_X, axis {axes}  |  out -> {OUT_DIR}")
     if args.dry_run:
         dry_run()
         return

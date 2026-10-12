@@ -38,10 +38,10 @@ def invalidate(out_dir=OUT_DIR, jobs=JOBS):
         d = dict(np.load(path))
         cols = 10.0 ** d["log_rv"] >= rvmin
         d["done_mask"][:, cols] = False
-        d["alpha_relic"][:, cols] = np.nan
+        d["coupling_relic"][:, cols] = np.nan
         d["sigmav"][:, cols] = np.nan
         if swap:
-            d["alphaX"] = NEW_AXIS
+            d["coupling_axis"] = NEW_AXIS
         off_grid = ~np.isfinite(d["mX_grid"])
         d["n_done"] = int((d["done_mask"] & ~off_grid).sum())
         np.savez(path, **d)

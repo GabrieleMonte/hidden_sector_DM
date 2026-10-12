@@ -84,7 +84,7 @@ def _configure(xi_ini):
     """
     base.XI_INI = float(xi_ini)
     base._make_model = _make_model
-    base.ALPHAX_LIMS = LAM_LIMS
+    base.COUPLING_LIMS = LAM_LIMS
     base.PORTAL = TAG_STEM
     base.PORTAL_KW = {}
     base.TAG = TAG_STEM if base.XI_INI == 1.0 else f"{TAG_STEM}_xi_ini_{base.XI_INI:g}"
@@ -124,7 +124,7 @@ def main():
           f"Phase 3 {'ON' if base.PHASE3_KW else 'OFF'}  |  tag '{base.TAG}'")
     print(f"grid: {base.N_MX} x {base.N_RV} = {base.N_VALID} valid (mX, mY) nodes, "
           f"mX in [{base.MX_LIM[0]:g}, {base.MX_LIM[1]:g}] GeV, "
-          f"rv <= {base.RV_MAX}  |  {base.N_ALPHAX} lam, axis {axes}  |  "
+          f"rv <= {base.RV_MAX}  |  {base.N_COUPLING} lam, axis {axes}  |  "
           f"out -> {base.OUT_DIR}")
 
     if args.dry_run:

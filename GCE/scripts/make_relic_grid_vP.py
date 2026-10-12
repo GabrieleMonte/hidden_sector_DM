@@ -364,7 +364,7 @@ def load_state(path, shape, eps, backup=True):
         return alpha, sigmav, done
 
     with np.load(path) as saved:
-        if not (np.array_equal(saved["alphaX"], ALPHAX)
+        if not (np.array_equal(saved["coupling_axis"], ALPHAX)
                 and np.array_equal(saved["eps"], np.atleast_1d(eps))):
             print(f"  {path.name}: alpha_X axis or eps changed -- starting fresh")
             return alpha, sigmav, done
@@ -383,10 +383,10 @@ def load_state(path, shape, eps, backup=True):
 
         sel = np.ix_(ix, jx)
         if alpha.ndim == 3:                            # leading eps axis
-            alpha[np.ix_(np.arange(shape[0]), ix, jx)] = saved["alpha_relic"]
+            alpha[np.ix_(np.arange(shape[0]), ix, jx)] = saved["coupling_relic"]
             sigmav[np.ix_(np.arange(shape[0]), ix, jx)] = saved["sigmav"]
         else:
-            alpha[sel] = saved["alpha_relic"]
+            alpha[sel] = saved["coupling_relic"]
             sigmav[sel] = saved["sigmav"]
         done[sel] |= old_done
 
@@ -403,7 +403,7 @@ def load_state(path, shape, eps, backup=True):
 
 def _save(path, eps, alpha_relic, sigmav, done):
     np.savez(path, log_mX=log_mX, log_rv=log_rv, mX_grid=mX_grid, mY_grid=mY_grid,
-             alphaX=ALPHAX, eps=np.atleast_1d(eps), alpha_relic=alpha_relic,
+             coupling_axis=ALPHAX, eps=np.atleast_1d(eps), coupling_relic=alpha_relic,
              sigmav=sigmav, done_mask=done,
              n_done=int((done & ~off_grid).sum()))
 
