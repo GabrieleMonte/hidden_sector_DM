@@ -42,7 +42,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import PchipInterpolator
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -307,19 +307,49 @@ def omega_h2_joint(mX, mY, alphaX, eps):
 # ---- coupling at the relic target -------------------------------
 
 def relic_alphaX(omega):
-    """alpha_X giving Omega_c h^2 = OCH2_TARGET, from a cubic spline of
-    log(alpha_X) against log(Omega h^2) over the sampled ALPHAX; NaN when the
-    target is not bracketed by the sampled range (no extrapolation)."""
+    """The sampled coupling reproducing Omega_c h^2 = OCH2_TARGET, by
+    shape-preserving interpolation of log(coupling) against log(Omega h^2)
+    over ALPHAX; NaN when the target is not bracketed (no extrapolation).
+
+    The coupling is alpha_X for the vector portals and lam for the Higgs
+    portal -- the name is from the former, which came first.
+
+    Pchip, not a cubic spline.  A cubic spline is global: every knot is
+    coupled through one linear system, so where Omega saturates at low
+    coupling -- annihilation no longer setting the relic, a shelf carrying no
+    crossing information -- its oscillation reaches the crossing at the far
+    end of the axis.  Measured on the Higgs portal, that put 4-17% of nodes
+    outside the sampled axis entirely, by up to 180 orders of magnitude.
+    Pchip is local and shape-preserving, so on monotone data the result
+    cannot leave the interval its neighbouring samples span.
+    """
     finite = np.isfinite(omega) & (omega > 0)
     if finite.sum() < 4:
         return np.nan
-    if not (omega[finite].min() <= OCH2_TARGET <= omega[finite].max()):
+
+    om, ax = omega[finite], ALPHAX[finite]
+    if not (om.min() <= OCH2_TARGET <= om.max()):
         return np.nan            # crossing outside the sampled range: report
                                  # honestly as absent instead of extrapolating
-    order = np.argsort(omega[finite])                        # Omega h^2 ascending
-    spline = CubicSpline(np.log(omega[finite][order]),
-                         np.log(ALPHAX[finite][order]))
-    return float(np.exp(spline(np.log(OCH2_TARGET))))
+
+    order = np.argsort(om)                                   # Omega h^2 ascending
+    log_om, log_ax = np.log(om[order]), np.log(ax[order])
+
+    # On the saturated shelf Omega can repeat to the last bit, and both Pchip
+    # and the cubic spline before it reject a non-increasing abscissa.  Drop
+    # the ties rather than let a worker die mid-grid.
+    keep = np.concatenate(([True], np.diff(log_om) > 0.0))
+    if keep.sum() < 2:
+        return np.nan
+
+    interp = PchipInterpolator(log_om[keep], log_ax[keep])
+    crossing = float(np.exp(interp(np.log(OCH2_TARGET))))
+
+    # The crossing has to be a coupling we sampled between.  Anything outside
+    # the axis is the interpolant leaving the data, not a physical answer.
+    if not (ax.min() <= crossing <= ax.max()):
+        return np.nan
+    return crossing
 
 
 def sigmav_swave(mX, mY, alphaX):
