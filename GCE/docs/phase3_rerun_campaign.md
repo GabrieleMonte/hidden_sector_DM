@@ -1,5 +1,9 @@
 # Phase-3 rerun campaign — v3 (turnkey)
 
+> **Executed** (job 59610830, `813de606bc`). Its rv cut left Phase-3-off values
+> below it, wrong by up to 40 % at xi_ini = 2.5. **Follow-up:
+> `phase3_followup.md`** (`sbatch GCE/scripts/phase3_followup.sbatch`).
+
 v2 resolved the five on-cluster review findings; v3 ships the campaign as
 code so nothing is edited by hand on the cluster. Solver: this branch at
 `94a43d37b1` or later. Secluded slices are NOT rerun (no in-era injection).
