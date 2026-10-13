@@ -1,10 +1,12 @@
-"""Phase-3 follow-up (docs/phase3_followup.md): one-time state surgery on the
-four joint grids it re-solves.  Run AFTER phase3_followup_preflight.py passes:
+"""Phase-3 follow-up, ROUND 2 (docs/phase3_followup.md): one-time state surgery
+on the two xi=1 joint grids it re-solves.  Run AFTER phase3_followup_preflight.py
+passes:
 
     python GCE/scripts/phase3_followup_invalidate.py
 
-Per file it clears done_mask / coupling_relic / sigmav in the follow-up's rv
-columns, so the variant drivers re-queue them.  The stored alpha_X axis and eps
+Per file it clears done_mask / coupling_relic / sigmav (and phase_path /
+p3_sdot, where a file already has them) in the follow-up's rv columns, so the
+variant drivers re-queue them.  The stored alpha_X axis and eps
 are checked, never rewritten: both are already what the drivers expect, and a
 mismatch would make load_state start fresh and drop every other column.
 
@@ -13,7 +15,9 @@ effect: a second run would also clear the nodes the job has re-solved since.
 So it writes MARKER after the last file and refuses to run while MARKER exists
 -- a requeued phase3_followup.sbatch therefore resumes from the drivers'
 checkpoints.  --force overrides that (only for a deliberate fresh start).
-Old values stay recoverable from this branch's git history.
+Round 1 left its own marker (phase3_followup_invalidated.txt); round 2 has a
+separate one, so the two never block each other.  Old values stay recoverable
+from this branch's git history.
 """
 import argparse
 import subprocess
@@ -24,14 +28,12 @@ from pathlib import Path
 import numpy as np
 
 OUT_DIR = Path(__file__).resolve().parents[1] / "output" / "relic"
-MARKER_NAME = "phase3_followup_invalidated.txt"
+MARKER_NAME = "phase3_followup2_invalidated.txt"
 AXIS = np.logspace(np.log10(2e-5), 0.0, 8)   # == driver ALPHAX_LIMS[1e-9] and [1e-10]
 
 #       file                                    eps    clear cols [lo, hi)   nodes
-JOBS = [("relic_grid_vP_xi_ini_2.5_eps1e-09.npz", 1e-9,  (0, 50),  1301),
-        ("relic_grid_vP_xi_ini_2.5_eps1e-10.npz", 1e-10, (0, 57),  1623),
-        ("relic_grid_vP_eps1e-09.npz",            1e-9,  (0, 67),  2083),
-        ("relic_grid_vP_eps1e-10.npz",            1e-10, (57, 67), 460)]
+JOBS = [("relic_grid_vP_eps1e-09.npz", 1e-9,  (0, 67),  2083),
+        ("relic_grid_vP_eps1e-10.npz", 1e-10, (57, 67), 460)]
 
 
 def _check(d, name, eps):
@@ -76,6 +78,9 @@ def invalidate(out_dir=OUT_DIR, jobs=JOBS, force=False):
         d["done_mask"][sel] = False
         d["coupling_relic"][sel] = np.nan
         d["sigmav"][sel] = np.nan
+        for key in ("phase_path", "p3_sdot"):
+            if key in d:
+                d[key][sel] = np.nan
         d["n_done"] = int((d["done_mask"] & ~off_grid).sum())
         tmp = path.with_name(path.stem + ".tmp.npz")
         np.savez(tmp, **d)
@@ -96,7 +101,7 @@ def invalidate(out_dir=OUT_DIR, jobs=JOBS, force=False):
 
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(description="Phase-3 follow-up state surgery (run once)")
+    ap = argparse.ArgumentParser(description="Phase-3 follow-up round-2 state surgery (run once)")
     ap.add_argument("--force", action="store_true",
                     help="run even though the marker says it already ran "
                          "(discards any re-solved follow-up nodes)")

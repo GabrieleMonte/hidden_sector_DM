@@ -158,6 +158,25 @@ PHASE3_KW = {}                           # Phase 3 (the in-solver entropy-inject
                                          # phase3_kw=dict(rtol_value=1e-6).  See
                                          # docs/phase3_rerun_campaign.md and tag
                                          # phase3-campaign-complete.
+PHASE3_REQUIRE = False                   # True: every alpha must end in Phase 3 (or the
+                                         # SM-locked 1.5S exit).  One that ends on the
+                                         # legacy background path is re-solved with the
+                                         # Sdot trigger lowered through PHASE3_RETRY_SDOT;
+                                         # if none engages, the legacy value is kept,
+                                         # logged ("LEGACY alpha") and flagged in
+                                         # phase_path.  docs/phase3_followup.md.
+PHASE3_RETRY_SDOT = (1e-4, 1e-5)         # retry ladder for PHASE3_REQUIRE.  NOT lower:
+                                         # at 1e-7 the joint solve can hand off at a
+                                         # phase entry without the final-state check
+                                         # passing, i.e. an early legacy handoff.
+ALPHAX_SWEEP_STOP = False                # True: node_joint solves ALPHAX upward and stops
+                                         # one point past the first Omega below
+                                         # OCH2_TARGET; the crossing comes from the four
+                                         # points around it (relic_alphaX_local).  The
+                                         # alphas beyond are the slowest solves and the
+                                         # least reliable (alpha=1 has returned 1e-144),
+                                         # and in the global spline they still pull the
+                                         # crossing.  Skipped alphas: phase_path -1.
 
 NCORES = 4                               # default worker count; -n overrides
 CHECKPOINT_EVERY = 8                     # completed nodes between saves
@@ -272,34 +291,64 @@ def omega_h2_secluded(mX, mY, alphaX):
     return omega
 
 
-def omega_h2_joint(mX, mY, alphaX, eps):
-    """Omega_c h^2 from the joint solver.  The background step is skipped when
-    the run ends SM-locked (phase 1.5S).  Returns NaN on a failed solve."""
+def omega_h2_joint_path(mX, mY, alphaX, eps):
+    """(Omega_c h^2, path code, Sdot trigger that engaged Phase 3) from the joint
+    solver.  The background step is skipped when the run ends in Phase 3 or
+    SM-locked (phase 1.5S).  With PHASE3_REQUIRE, a run that would take the
+    legacy background step is first re-solved down PHASE3_RETRY_SDOT.  A failed
+    solve gives (NaN, PATH_FAILED, NaN)."""
     solver = BoltzmannSolver(cosmo, VectorPortal(
         mX=mX, mY=mY, gX=2, gY=3, alphaX=alphaX, xi_ini=XI_INI,
         include_antiparticlesX=True, include_antiparticlesY=False))
-    try:
-        joint = timed_solve(solver.solve_boltzmann_joint, epsX=eps,
-                            return_bg_ICs=True, min_eps_floor_ratio=0.0,
-                            GoH_exit_thresh=GOH_EXIT_THRESH, xmax=XMAX_JOINT,
-                            phase2_form="Y", verbose=False, **PHASE3_KW)
-    except Exception as e:
-        _log_nan(mX, mY, alphaX, eps, e)
-        return np.nan
+    tries = [PHASE3_KW]
+    if PHASE3_REQUIRE:
+        tries += [{**PHASE3_KW, "Sdot_switch_thresh": s} for s in PHASE3_RETRY_SDOT]
+    first = None                             # the PHASE3_KW run: the legacy fallback
+    for kw in tries:
+        try:
+            joint = timed_solve(solver.solve_boltzmann_joint, epsX=eps,
+                                return_bg_ICs=True, min_eps_floor_ratio=0.0,
+                                GoH_exit_thresh=GOH_EXIT_THRESH, xmax=XMAX_JOINT,
+                                phase2_form="Y", verbose=False, **kw)
+        except Exception as e:
+            _log_nan(mX, mY, alphaX, eps, e)
+            if first is None:                # the PHASE3_KW run itself failed
+                return np.nan, PATH_FAILED, np.nan
+            continue                         # a failed retry = did not engage
+        # phase_final == 3: Phase 3 already applied decay + dilution in-solver and
+        # YX_relic is Omega-ready, exactly like the SM-locked (1.5S) exit.
+        if joint["phase_final"] == 3:
+            return (joint["YX_relic"] * mX * s0_cosmo / rhoc, PATH_P3,
+                    kw.get("Sdot_switch_thresh", np.inf))
+        if joint["phase_final"] == "1.5S":
+            return joint["YX_relic"] * mX * s0_cosmo / rhoc, PATH_SMLOCK, np.nan
+        if first is None:
+            first = joint
 
-    # phase_final == 3: Phase 3 already applied decay + dilution in-solver and
-    # YX_relic is Omega-ready, exactly like the SM-locked (1.5S) exit.
-    if joint["phase_final"] in ("1.5S", 3):
-        return joint["YX_relic"] * mX * s0_cosmo / rhoc
+    if PHASE3_REQUIRE:
+        print(f"LEGACY alpha mX={mX:.3f} mY={mY:.3f} alphaX={alphaX:.3e} eps={eps:g}: "
+              f"Phase 3 never engaged (Sdot down to {tries[-1]['Sdot_switch_thresh']:g}, "
+              f"phase_final={first['phase_final']}); legacy value kept", flush=True)
     try:
         yield_X = timed_solve(solver.solve_background, epsX=eps,
-                              bg_ICs=joint["bg_ICs"], correct_Y_decay=True,
+                              bg_ICs=first["bg_ICs"], correct_Y_decay=True,
                               traj_has_decay=True, stop_on_rhoY=True,
                               verbose=False)["YX_final"]
     except Exception as e:
         _log_nan(mX, mY, alphaX, eps, e)
-        return np.nan
-    return yield_X * mX * s0_cosmo / rhoc
+        return np.nan, PATH_FAILED, np.nan
+    return yield_X * mX * s0_cosmo / rhoc, PATH_LEGACY, np.nan
+
+
+def omega_h2_joint(mX, mY, alphaX, eps):
+    """Omega_c h^2 from the joint solver: omega_h2_joint_path without the path.
+    Returns NaN on a failed solve."""
+    return omega_h2_joint_path(mX, mY, alphaX, eps)[0]
+
+
+# phase_path codes, saved per (mX, rv, alpha): how each Omega was obtained.
+PATH_FAILED, PATH_LEGACY, PATH_P3, PATH_SMLOCK = 0.0, 1.0, 3.0, 4.0
+PATH_SKIPPED = -1.0                      # not solved: past the crossing (ALPHAX_SWEEP_STOP)
 
 
 # ---- coupling at the relic target -------------------------------
@@ -317,6 +366,34 @@ def relic_alphaX(omega):
     order = np.argsort(omega[finite])                        # Omega h^2 ascending
     spline = CubicSpline(np.log(omega[finite][order]),
                          np.log(ALPHAX[finite][order]))
+    return float(np.exp(spline(np.log(OCH2_TARGET))))
+
+
+def relic_alphaX_local(omega):
+    """alpha_X giving Omega_c h^2 = OCH2_TARGET from the sampled alphas around the
+    FIRST crossing only (ALPHAX ascending).  With k the first finite Omega below
+    the target, a cubic spline of log(alpha_X) against log(Omega h^2) over the
+    finite points among k-2 .. k+1; log-log linear on the bracketing pair when
+    that window has fewer than 3 points, misses the last point above the target,
+    or is not monotone.  NaN when the target is not bracketed (no extrapolation).
+    On complete axes this matches relic_alphaX to <= 0.2 % (2026-10-13 test)."""
+    finite = np.isfinite(omega) & (omega > 0)
+    below = np.flatnonzero(finite & (omega < OCH2_TARGET))
+    if below.size == 0:
+        return np.nan                    # crossing above the sampled range
+    k = below[0]
+    above = np.flatnonzero(finite[:k])
+    if above.size == 0:
+        return np.nan                    # crossing below the sampled range
+    lo = above[-1]                       # last finite point above the target
+    win = np.arange(max(k - 2, 0), min(k + 2, omega.size))
+    win = win[finite[win]]
+    om = omega[win]
+    if win.size < 3 or lo < win[0] or np.any(np.diff(om) >= 0):
+        t = np.log(OCH2_TARGET / omega[lo]) / np.log(omega[k] / omega[lo])
+        return float(np.exp(np.log(ALPHAX[lo]) + t * np.log(ALPHAX[k] / ALPHAX[lo])))
+    order = np.argsort(om)
+    spline = CubicSpline(np.log(om[order]), np.log(ALPHAX[win][order]))
     return float(np.exp(spline(np.log(OCH2_TARGET))))
 
 
@@ -340,11 +417,23 @@ def node_secluded(task):
 
 
 def node_joint(task):
-    """(i, j) -> alpha_X_relic and <sigma v> at a single eps."""
+    """(i, j) -> alpha_X_relic and <sigma v> at a single eps, plus per alpha
+    the phase_path code and the Sdot trigger that engaged Phase 3.  With
+    ALPHAX_SWEEP_STOP the sweep ends one alpha past the first Omega below
+    OCH2_TARGET, and the rest are left NaN with phase_path PATH_SKIPPED."""
     i, j, mX, mY, eps = task
-    omega = np.array([omega_h2_joint(mX, mY, a, eps) for a in ALPHAX])
-    alpha = relic_alphaX(omega)
-    return i, j, alpha, sigmav_swave(mX, mY, alpha)
+    omega = np.full(ALPHAX.size, np.nan)
+    sdot = np.full(ALPHAX.size, np.nan)
+    path = np.full(ALPHAX.size, PATH_SKIPPED)
+    last = ALPHAX.size - 1                   # index of the last alpha to solve
+    for k, a in enumerate(ALPHAX):
+        if k > last:
+            break
+        omega[k], path[k], sdot[k] = omega_h2_joint_path(mX, mY, a, eps)
+        if ALPHAX_SWEEP_STOP and last == ALPHAX.size - 1 and omega[k] < OCH2_TARGET:
+            last = min(k + 1, last)          # one more past the first crossing
+    alpha = relic_alphaX_local(omega) if ALPHAX_SWEEP_STOP else relic_alphaX(omega)
+    return i, j, alpha, sigmav_swave(mX, mY, alpha), path, sdot
 
 
 # ---- state: load / seed / save -------------------------------------
@@ -409,11 +498,33 @@ def load_state(path, shape, eps, backup=True):
     return alpha, sigmav, done
 
 
-def _save(path, eps, alpha_relic, sigmav, done):
+def load_paths(path, eps):
+    """(phase_path, p3_sdot), shape (N_MX, N_RV, N_ALPHAX), seeded from `path`
+    under the same conditions as load_state; NaN = unknown (unsolved, or written
+    before these keys existed)."""
+    shape = (N_MX, N_RV, N_ALPHAX)
+    phase_path, p3_sdot = np.full(shape, np.nan), np.full(shape, np.nan)
+    if not (path.exists() and SEED_FROM_COARSE):
+        return phase_path, p3_sdot
+    with np.load(path) as saved:
+        if not ("phase_path" in saved
+                and np.array_equal(saved["coupling_axis"], ALPHAX)
+                and np.array_equal(saved["eps"], np.atleast_1d(eps))):
+            return phase_path, p3_sdot
+        ix = _embed(saved["log_mX"], log_mX)
+        jx = _embed(saved["log_rv"], log_rv)
+        if ix is None or jx is None:
+            return phase_path, p3_sdot
+        phase_path[np.ix_(ix, jx)] = saved["phase_path"]
+        p3_sdot[np.ix_(ix, jx)] = saved["p3_sdot"]
+    return phase_path, p3_sdot
+
+
+def _save(path, eps, alpha_relic, sigmav, done, **extra):
     np.savez(path, log_mX=log_mX, log_rv=log_rv, mX_grid=mX_grid, mY_grid=mY_grid,
              coupling_axis=ALPHAX, eps=np.atleast_1d(eps), coupling_relic=alpha_relic,
              sigmav=sigmav, done_mask=done, xi_ini=XI_INI,
-             n_done=int((done & ~off_grid).sum()))
+             n_done=int((done & ~off_grid).sum()), **extra)
 
 
 # ---- grid runs ----------------------------------------------
@@ -473,18 +584,29 @@ def run_joint(eps, ncores):
     path = OUT_DIR / f"relic_grid_vP_{TAG}_eps{eps:.0e}.npz"
     _set_alphax(eps)
     alpha_relic, sigmav, done = load_state(path, (N_MX, N_RV), eps)
+    phase_path, p3_sdot = load_paths(path, eps)
 
     def on_result(res):
-        i, j, a, sv = res
+        i, j, a, sv, pp, sd = res
         alpha_relic[i, j] = a
         sigmav[i, j] = sv
         done[i, j] = True
+        phase_path[i, j] = pp
+        p3_sdot[i, j] = sd
 
     tasks = [t + (eps,) for t in _pending(done)]
     _run_pool(node_joint, tasks, ncores, f"joint {eps:.0e}",
-              on_result, lambda: _save(path, eps, alpha_relic, sigmav, done))
+              on_result, lambda: _save(path, eps, alpha_relic, sigmav, done,
+                                       phase_path=phase_path, p3_sdot=p3_sdot))
     print(f"joint {eps:.0e}: {np.isfinite(sigmav).sum()}/{N_VALID} solved "
           f"-> {path.name}")
+    known = np.isfinite(phase_path)
+    print(f"  phase paths on record: {int(known.sum())} alpha solves -- "
+          f"{int((phase_path == PATH_P3).sum())} Phase 3, "
+          f"{int((phase_path == PATH_SMLOCK).sum())} SM-locked, "
+          f"{int((phase_path == PATH_LEGACY).sum())} legacy, "
+          f"{int((phase_path == PATH_FAILED).sum())} failed, "
+          f"{int((phase_path == PATH_SKIPPED).sum())} skipped past the crossing")
 
 
 def dry_run():

@@ -1,21 +1,30 @@
-"""Phase-3 follow-up (docs/phase3_followup.md): generate its four driver variants.
+"""Phase-3 follow-up, ROUND 2 (docs/phase3_followup.md): generate its two driver
+variants.
 
-The follow-up re-solves four joint slices with Phase 3 FORCED on.  Each slice
-differs from a restored source driver only in five constants, and the slices run
-concurrently, so each gets its own generated file rather than a hand edit:
+Round 1 (job 59725646, commit 9098886f73) re-solved four slices with the Sdot
+trigger forced to 1e-3.  xi=2.5 came back clean; at xi=1 the 1e-3 trigger still
+left single alphas on the legacy path, 2-7x low in Omega, and ~20 nodes dropped
+to the wrong crossing.  Round 2 re-solves the two xi=1 slices with every alpha
+REQUIRED on Phase 3.  Each slice differs from a restored source driver only in
+seven constants, and the slices run concurrently, so each gets its own generated
+file rather than a hand edit:
 
     python GCE/scripts/phase3_followup_variants.py            # write the variants
     python GCE/scripts/phase3_followup_variants.py --check    # verify, write nothing
 
-  make_relic_grid_vP_xi_ini_2.5_fu_e09.py   xi=2.5, eps=1e-9,  cols  0-49   1301 nodes
-  make_relic_grid_vP_xi_ini_2.5_fu_e10.py   xi=2.5, eps=1e-10, cols  0-56   1623 nodes
-  make_relic_grid_vP_fu_e09.py              xi=1,   eps=1e-9,  cols  0-66   2083 nodes
-  make_relic_grid_vP_fu_e10.py              xi=1,   eps=1e-10, cols 57-66    460 nodes
+  make_relic_grid_vP_fu2_e09.py   xi=1, eps=1e-9,  cols  0-66   2083 nodes
+  make_relic_grid_vP_fu2_e10.py   xi=1, eps=1e-10, cols 57-66    460 nodes
 
 Every variant sets EPS_JOINT to its one eps, RUN_SECLUDED=False, ONLY_RV_COLUMNS
-to its block, SOLVE_TIMEOUT=7200 (the campaign's Phase-3 value) and PHASE3_KW to
-FORCED below.  ALPHAX_LIMS is NOT touched: both eps already store (2e-5, 1.0),
-and load_state compares the axis exactly.
+to its block, SOLVE_TIMEOUT=7200 (the campaign's Phase-3 value), PHASE3_KW to
+FORCED below, PHASE3_REQUIRE=True (an alpha that ends on the legacy path is
+re-solved down PHASE3_RETRY_SDOT; each alpha's path is saved as phase_path) and
+ALPHAX_SWEEP_STOP=True (alphas solved upward, stopping one past the crossing,
+which is read off the four points around it).  ALPHAX_LIMS is NOT touched: both
+eps already store (2e-5, 1.0), and load_state compares the axis exactly.
+
+The round-1 variants (*_fu_e09/_fu_e10.py) stay in the tree as the record of
+what that job ran; this script no longer writes or checks them.
 
 Every substitution is anchored and asserted, so a drift in the source drivers
 fails here instead of silently producing a wrong-config run.
@@ -31,16 +40,14 @@ HERE = Path(__file__).resolve().parent
 COMMENT_COL = 41                 # where the drivers align their trailing comments
 
 # The Phase-3 settings of the follow-up: the 2026-10 campaign's, except the Sdot
-# trigger, lowered 0.05 -> 1e-3 so that Phase 3 engages at every alpha of a node.
-# Where the campaign trigger did engage, this reproduces it to < 0.2 %.
+# trigger, lowered 0.05 -> 1e-3 (first try; PHASE3_REQUIRE retries lower).  Where
+# the campaign trigger did engage, this reproduces it to < 0.2 %.
 FORCED = ("dict(rho_switch_thresh=0.3, Sdot_switch_thresh=1e-3,\n"
           "                 enable_phase3=True, phase3_kw=dict(rtol_value=1e-6))")
 
 #            source driver                    suffix     eps     rv columns   nodes
-SLICES = [("make_relic_grid_vP_xi_ini_2.5", "_fu_e09", "1e-9",  (0, 50),  1301),
-          ("make_relic_grid_vP_xi_ini_2.5", "_fu_e10", "1e-10", (0, 57),  1623),
-          ("make_relic_grid_vP",            "_fu_e09", "1e-9",  (0, 67),  2083),
-          ("make_relic_grid_vP",            "_fu_e10", "1e-10", (57, 67), 460)]
+SLICES = [("make_relic_grid_vP", "_fu2_e09", "1e-9",  (0, 67),  2083),
+          ("make_relic_grid_vP", "_fu2_e10", "1e-10", (57, 67), 460)]
 
 # Each constant owns one assignment line followed by indented comment-only
 # continuation lines; an edit replaces the whole block, so a generated file
@@ -51,6 +58,8 @@ ANCHORS = {
     "ONLY_RV_COLUMNS": r"^ONLY_RV_COLUMNS = None .*\n",
     "SOLVE_TIMEOUT":   r"^SOLVE_TIMEOUT = 2700 .*\n",
     "PHASE3_KW":       r"^PHASE3_KW = \{\} .*\n",
+    "PHASE3_REQUIRE":  r"^PHASE3_REQUIRE = False .*\n",
+    "ALPHAX_SWEEP_STOP": r"^ALPHAX_SWEEP_STOP = False .*\n",
 }
 CONTINUATION = r"(?:^[ ]+#.*\n)*"
 
@@ -79,9 +88,18 @@ def _edits(eps, cols, nodes):
         ])),
         ("PHASE3_KW", f"PHASE3_KW = {FORCED}\n" + _block("", [
             "FOLLOW-UP: Phase 3 forced on.  The campaign's",
-            "settings with Sdot_switch_thresh 0.05 -> 1e-3,",
-            "so every alpha of a node takes the same path",
+            "settings with Sdot_switch_thresh 0.05 -> 1e-3",
             "(docs/phase3_followup.md).",
+        ])),
+        ("PHASE3_REQUIRE", _block("PHASE3_REQUIRE = True", [
+            "FOLLOW-UP 2: every alpha must end in Phase 3;",
+            "a legacy exit is re-solved down",
+            "PHASE3_RETRY_SDOT and, if it never engages,",
+            "kept, logged and flagged in phase_path.",
+        ])),
+        ("ALPHAX_SWEEP_STOP", _block("ALPHAX_SWEEP_STOP = True", [
+            "FOLLOW-UP 2: stop one alpha past the crossing;",
+            "crossing from the 4 points around it.",
         ])),
     ]
 
@@ -118,15 +136,15 @@ def build(stem, suffix, eps, cols, nodes):
             if '"""' in lines[k]:
                 end = k + 1
                 break
-    role = (f"FOLLOW-UP: eps = {eps}, rv cols {cols[0]}-{cols[1] - 1}, {nodes} nodes, "
-            f"Phase 3 forced.")
+    role = (f"FOLLOW-UP ROUND 2: eps = {eps}, rv cols {cols[0]}-{cols[1] - 1}, {nodes} nodes, "
+            f"Phase 3 required, sweep stops past the crossing.")
     out = "\n".join(lines[:end]) + "\n" + BANNER.format(src=stem, role=role) \
         + "\n".join(lines[end:])
     return HERE / f"{stem}{suffix}.py", out
 
 
 def main():
-    ap = argparse.ArgumentParser(description="generate the Phase-3 follow-up driver variants")
+    ap = argparse.ArgumentParser(description="generate the Phase-3 follow-up round-2 driver variants")
     ap.add_argument("--check", action="store_true",
                     help="verify the generated files are current; write nothing")
     args = ap.parse_args()

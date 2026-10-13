@@ -1,26 +1,24 @@
-"""Phase-3 follow-up, preflight (docs/phase3_followup.md).  Gates the
-invalidation and the run.  ~10 min on >= 16 cores, cosmo_env active, from the
+"""Phase-3 follow-up ROUND 2, preflight (docs/phase3_followup.md).  Gates the
+invalidation and the run.  ~5-10 min on >= 3 cores, cosmo_env active, from the
 repo root:
 
     python GCE/scripts/phase3_followup_preflight.py          # all checks
-    python GCE/scripts/phase3_followup_preflight.py -n 16    # cap the worker pool
+    python GCE/scripts/phase3_followup_preflight.py -n 3     # cap the worker pool
 
-Every check goes through the GENERATED follow-up drivers (omega_h2_joint, with
-their PHASE3_KW), so it tests what the job will actually run.
+Every check runs node_joint of the GENERATED round-2 drivers, so it tests what
+the job will actually run: the 1e-3 first try, the PHASE3_REQUIRE retry ladder,
+the early-stopping alpha sweep and the local crossing, end to end.
 
-  F1  forced Phase 3 keeps the validated anchor: alpha_relic at xi=2.5,
-      eps=1e-9, mX=34.86, rv=0.950 must come back 8.386e-3 to 2 %.
-  F2  the diagnosis reproduces: Omega/0.12 at the STORED (pre-follow-up)
-      crossing of seven nodes must match the values measured on 2026-10-12 to
-      1 %.  These are the corrections the follow-up applies (<sigma v> moves by
-      exactly this factor); a mismatch means this solver or config is not the
-      one the follow-up was planned with.
-  F3  forced Phase 3 removes the mixed path at the worst xi=1 glitch node
-      (mX=24.88, rv=0.760, eps=1e-9): at alpha=2.065e-3, where the campaign
-      trigger stayed on the legacy path (Omega = 0.181), Omega must come back
-      on the Phase-3 branch.
+  G1  three round-1 glitch nodes come back repaired.  In round 1 the 1e-3 trigger
+      left one or more of their alphas on the legacy path (Omega 2-7x low) and
+      the crossing fell by 3.4-5.7x.  Each must now give the crossing measured
+      on 2026-10-13 (all alphas on Phase 3, crossing from the four points around
+      it) to 0.5 %, with:
+        - no alpha legacy or failed;
+        - at least one alpha engaged by the retry ladder (Sdot < 1e-3);
+        - the alphas past the crossing skipped, not solved.
 
-Exit code 0 iff F1, F2 and F3 all pass.  Prints a GATE line last.
+Exit code 0 iff G1 passes on all three.  Prints a GATE line last.
 """
 
 import argparse
@@ -37,30 +35,20 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 HERE = Path(__file__).resolve().parent
 POOL_TIMEOUT = 3600          # s per solve
+G1_TOL = 0.005
 
-ANCHOR = (20, 66, 8.3862e-3)  # (i, j, alpha_relic): mX=34.856, rv=0.950
-ANCHOR_TOL = 0.02
-F2_TOL = 0.01
-
-# (driver, i, j, stored alpha_relic, Omega/0.12 there with Phase 3 forced),
-# measured 2026-10-12 through solver 55550e14fe with the follow-up's PHASE3_KW.
-F2_NODES = [
-    ("d25_e09", 20, 26, 1.5090674965932695e-03, 1.12826),   # rv 0.159
-    ("d25_e09", 20, 48, 3.0313732473365943e-03, 0.83275),   # rv 0.426
-    ("d25_e10", 20, 26, 5.0040055616616480e-04, 1.40270),   # rv 0.159
-    ("d25_e10", 20, 52, 1.4673228529848278e-03, 1.23277),   # rv 0.509
-    ("d1_e09",  20, 26, 1.3707508141576406e-03, 0.91846),   # rv 0.159
-    ("d1_e09",  20, 48, 2.0697999859483436e-03, 1.04070),   # rv 0.426
-    ("d1_e10",  20, 66, 3.4156680113146584e-02, 1.12239),   # rv 0.950
+# (driver, i, j, round-1 crossing, repaired crossing, alphas solved), measured
+# 2026-10-13 through solver 9098886f73 (scratch fu_glitch_axis.py, test_sweep_live.py)
+G1_NODES = [
+    ("d1_e09", 44, 55, 1.7140e-03, 9.7117e-03, 7),    # mX=95.87 rv=0.582
+    ("d1_e09", 12, 52, 6.0581e-04, 1.7966e-03, 5),    # mX=24.88 rv=0.509
+    ("d1_e10",  1, 62, 6.9504e-04, 3.3703e-03, 6),    # mX=15.65 rv=0.795
 ]
-F3_NODE = ("d1_e09", 12, 61, 3)          # alpha = ALPHAX[3] = 2.065e-3
-F3_LEGACY = 0.18145                       # campaign trigger, legacy path
-F3_FORCED = 0.308                         # forced trigger, Phase-3 path
 
 
 def _load_driver(key, stem):
-    """Import a generated driver under a dot-free module name (the xi_ini file
-    names contain '.', which breaks pickling of their functions in mp.Pool)."""
+    """Import a generated driver under its own module name, so mp.Pool can
+    pickle its functions."""
     spec = importlib.util.spec_from_file_location(key, HERE / f"{stem}.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[key] = mod
@@ -71,76 +59,61 @@ def _load_driver(key, stem):
 
 
 DRIVERS = {
-    "d25_e09": _load_driver("d25_e09", "make_relic_grid_vP_xi_ini_2.5_fu_e09"),
-    "d25_e10": _load_driver("d25_e10", "make_relic_grid_vP_xi_ini_2.5_fu_e10"),
-    "d1_e09":  _load_driver("d1_e09",  "make_relic_grid_vP_fu_e09"),
-    "d1_e10":  _load_driver("d1_e10",  "make_relic_grid_vP_fu_e10"),
+    "d1_e09": _load_driver("d1_e09", "make_relic_grid_vP_fu2_e09"),
+    "d1_e10": _load_driver("d1_e10", "make_relic_grid_vP_fu2_e10"),
 }
 
 
-def _omega(task):
-    """Pool worker: (driver key, i, j, alpha) -> Omega h^2 through the driver."""
-    key, i, j, alpha = task
+def _node(task):
+    """Pool worker: (driver key, i, j) -> node_joint's (alpha, path, sdot), seconds."""
+    key, i, j = task
     mod = DRIVERS[key]
     t0 = time.perf_counter()
-    val = mod.omega_h2_joint(float(mod.mX_grid[i, j]), float(mod.mY_grid[i, j]),
-                             alpha, mod.EPS_JOINT[0])
-    return float(val), time.perf_counter() - t0
+    _, _, alpha, _, path, sdot = mod.node_joint(
+        (i, j, float(mod.mX_grid[i, j]), float(mod.mY_grid[i, j]), mod.EPS_JOINT[0]))
+    return alpha, path, sdot, time.perf_counter() - t0
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Phase-3 follow-up preflight")
-    ap.add_argument("-n", "--ncores", type=int, default=min(32, mp.cpu_count()))
+    ap = argparse.ArgumentParser(description="Phase-3 follow-up round-2 preflight")
+    ap.add_argument("-n", "--ncores", type=int, default=min(3, mp.cpu_count()))
     args = ap.parse_args()
 
     for key, mod in DRIVERS.items():
         kw = mod.PHASE3_KW
         assert kw.get("enable_phase3") and kw.get("Sdot_switch_thresh") == 1e-3, \
             f"{key}: PHASE3_KW is not the follow-up's forced setting: {kw}"
+        assert mod.PHASE3_REQUIRE, f"{key}: PHASE3_REQUIRE is off"
+        assert mod.ALPHAX_SWEEP_STOP, f"{key}: ALPHAX_SWEEP_STOP is off"
         assert mod.ALPHAX.max() == 1.0, f"{key}: alpha_X axis is not (2e-5, 1.0)"
 
-    d25 = DRIVERS["d25_e09"]
-    i, j, _ = ANCHOR
-    tasks = [("d25_e09", i, j, float(a)) for a in d25.ALPHAX]
-    tasks += [(k, i, j, a) for k, i, j, a, _ in F2_NODES]
-    k3, i3, j3, a3 = F3_NODE
-    tasks.append((k3, i3, j3, float(DRIVERS[k3].ALPHAX[a3])))
-
-    print(f"preflight: {len(tasks)} solves on {args.ncores} workers "
+    tasks = [(k, i, j) for k, i, j, *_ in G1_NODES]
+    print(f"preflight: {len(tasks)} nodes on {args.ncores} workers "
           f"(cap {POOL_TIMEOUT} s/solve)", flush=True)
     with mp.Pool(args.ncores) as pool:
-        res = []
-        for k, (om, secs) in enumerate(pool.imap(_omega, tasks, chunksize=1)):
-            print(f"  [{k + 1:2d}/{len(tasks)}] {tasks[k]}: Omega={om:.5g} ({secs:.0f} s)",
-                  flush=True)
-            res.append(om)
-    res = np.array(res)
-    n1 = len(d25.ALPHAX)
+        res = list(pool.imap(_node, tasks, chunksize=1))
 
-    alpha = d25.relic_alphaX(res[:n1])
-    ratio = alpha / ANCHOR[2]
-    f1 = bool(np.isfinite(alpha) and abs(ratio - 1) <= ANCHOR_TOL)
-    print(f"\nF1 anchor xi=2.5 eps=1e-9 rv=0.950: alpha_relic={alpha:.4e} "
-          f"(anchor {ANCHOR[2]:.4e}, ratio {ratio:.4f}) {'PASS' if f1 else 'FAIL'}")
-
-    f2 = True
-    print("F2 Omega/0.12 at the stored crossing (= the <sigma v> correction):")
-    for (key, i, j, a, want), om in zip(F2_NODES, res[n1:n1 + len(F2_NODES)]):
-        got = om / 0.12
-        ok = bool(np.isfinite(got) and abs(got / want - 1) <= F2_TOL)
-        f2 &= ok
+    go = True
+    print("\nG1 round-1 glitch nodes, repaired:")
+    for (key, i, j, old, want, n_solved), (alpha, path, sdot, secs) in zip(G1_NODES, res):
         mod = DRIVERS[key]
-        print(f"   xi={getattr(mod, 'XI_INI', 1.0):<3} eps={mod.EPS_JOINT[0]:.0e} "
-              f"rv={10 ** mod.log_rv[j]:.3f}: {got:.4f} (expected {want:.4f}) "
-              f"{'PASS' if ok else 'FAIL'}")
+        solved = path != mod.PATH_SKIPPED
+        checks = {
+            "crossing": bool(np.isfinite(alpha) and abs(alpha / want - 1) <= G1_TOL),
+            "no legacy/failed": not np.any(np.isin(path, (mod.PATH_LEGACY, mod.PATH_FAILED))),
+            "retry used": bool(np.any(sdot[solved & (path == mod.PATH_P3)] < 1e-3)),
+            "tail skipped": int(solved.sum()) == n_solved and bool(np.all(solved[:n_solved])),
+        }
+        ok = all(checks.values())
+        go &= ok
+        print(f"   eps={mod.EPS_JOINT[0]:.0e} mX={mod.mX_grid[i, j]:.2f} "
+              f"rv={10 ** mod.log_rv[j]:.3f}: alpha_relic={alpha:.4e} (repaired {want:.4e}, "
+              f"round 1 {old:.4e}) [{secs:.0f} s] {'PASS' if ok else 'FAIL'}")
+        print(f"      paths {path.tolist()}  Sdot {sdot.tolist()}")
+        for name, c in checks.items():
+            if not c:
+                print(f"      FAILED: {name}")
 
-    om3 = res[-1]
-    f3 = bool(np.isfinite(om3) and abs(om3 / F3_FORCED - 1) <= 0.02)
-    print(f"F3 glitch node xi=1 eps=1e-9 mX=24.88 rv=0.760 alpha={tasks[-1][3]:.4e}: "
-          f"Omega={om3:.4g} (Phase-3 branch {F3_FORCED}, legacy {F3_LEGACY}) "
-          f"{'PASS' if f3 else 'FAIL'}")
-
-    go = f1 and f2 and f3
     print(f"\nGATE  invalidate + run: {'GO' if go else 'NO-GO'}")
     sys.exit(0 if go else 1)
 

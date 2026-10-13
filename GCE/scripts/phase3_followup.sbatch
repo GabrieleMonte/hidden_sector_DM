@@ -1,18 +1,18 @@
 #!/bin/bash
-#SBATCH -J relic-p3-followup
-#SBATCH -o /global/u1/g/gab97/secluded_DM/GCE/scripts/logs/relic_p3fu_%j.out
-#SBATCH -e /global/u1/g/gab97/secluded_DM/GCE/scripts/logs/relic_p3fu_%j.err
+#SBATCH -J relic-p3-followup2
+#SBATCH -o /global/u1/g/gab97/secluded_DM/GCE/scripts/logs/relic_p3fu2_%j.out
+#SBATCH -e /global/u1/g/gab97/secluded_DM/GCE/scripts/logs/relic_p3fu2_%j.err
 #SBATCH -C cpu
 #SBATCH -A m3166
-#SBATCH -N 3
+#SBATCH -N 2
 #SBATCH --ntasks-per-node=1
 #SBATCH -c 256
 #SBATCH -q regular
-#SBATCH -t 48:00:00
+#SBATCH -t 12:00:00
 #SBATCH --open-mode=append
 #SBATCH --requeue
 #
-# Phase-3 follow-up (docs/phase3_followup.md), unattended.  Submit ONE job:
+# Phase-3 follow-up ROUND 2 (docs/phase3_followup.md), unattended.  Submit ONE job:
 #
 #   sbatch GCE/scripts/phase3_followup.sbatch
 #
@@ -23,21 +23,24 @@
 #
 # What it does:
 #   Stage 0  provenance; phase3_followup_variants.py --check
-#   Stage 1  preflight F1-F3 on the head node, ~10 min        } skipped once the
+#   Stage 1  preflight G1 on the head node, ~5-10 min          } skipped once the
 #   Stage 2  phase3_followup_invalidate.py (writes its marker) } marker exists
-#   Stage 3  four slices on three nodes, each its own .npz:
-#              node 1  xi=1   eps=1e-9   cols  0-66  2083 nodes
-#              node 2  xi=2.5 eps=1e-10  cols  0-56  1623 nodes
-#              node 3  xi=2.5 eps=1e-9   cols  0-49  1301 nodes,
-#                      then xi=1 eps=1e-10 cols 57-66  460 nodes
-#   Stage 4  phase3_followup_report.py: new vs old crossings (read-only)
+#   Stage 3  the two xi=1 slices, one node each, each its own .npz.  Every alpha
+#            REQUIRED on Phase 3 (a legacy exit is re-solved down the Sdot ladder
+#            1e-3 -> 1e-4 -> 1e-5, and every alpha's path saved as phase_path);
+#            the alpha sweep stops one point past the crossing:
+#              xi=1 eps=1e-9   cols  0-66  2083 nodes
+#              xi=1 eps=1e-10  cols 57-66   460 nodes
+#   Stage 4  phase3_followup_report.py: new vs round-1 and campaign crossings,
+#            and the path every alpha took (read-only)
 #
 # REQUEUE-SAFE.  The invalidation must run exactly once (a second run would
 # clear nodes this job already re-solved), so it leaves
-# GCE/output/relic/phase3_followup_invalidated.txt and a requeued job skips
+# GCE/output/relic/phase3_followup2_invalidated.txt and a requeued job skips
 # Stages 1-2 and resumes every slice from its checkpoint mask.
-# 48 h: a job killed at its time limit ends TIMEOUT and is NOT requeued, and the
-# slices exit as soon as their queues drain, so the long limit costs nothing.
+# 12 h: round 1 did these two slices with full alpha axes inside 5.3 h.  A job
+# killed at its time limit ends TIMEOUT and is NOT requeued; resubmitting
+# resumes from the checkpoints.
 
 DRYRUN=${PHASE3_FOLLOWUP_DRYRUN:-0}
 REPO=${PHASE3_FOLLOWUP_REPO:-/global/u1/g/gab97/secluded_DM}
@@ -54,7 +57,7 @@ cd "$REPO" || exit 1
 
 SCRIPTS=GCE/scripts
 LOGS=$SCRIPTS/logs
-MARKER=GCE/output/relic/phase3_followup_invalidated.txt
+MARKER=GCE/output/relic/phase3_followup2_invalidated.txt
 JOBID=${SLURM_JOB_ID:-dryrun}
 WORKERS=128                        # physical cores; see relic_phase3.sbatch for why not 256
 mkdir -p "$LOGS"
@@ -66,10 +69,9 @@ die     () { echo; echo "FOLLOW-UP HALTED: $1" >&2; exit 1; }
 # Gate: the driver's own --dry-run must not say "starting fresh" (the stored
 # axis/eps do not match, and the first _save would drop every other column) and
 # must queue at most the slice's node count (more means the wrong columns).
-# Ends in `return`, never `exit`: node 3 chains two slices in one subshell.
 run_slice () {
     local label=$1 driver=$2 expect=$3
-    local log=$LOGS/relic_p3fu_${JOBID}_${label}.out
+    local log=$LOGS/relic_p3fu2_${JOBID}_${label}.out
     local rc=0 dry left
     {
         echo "[$label] $(date '+%F %T') starting, driver=$driver"
@@ -102,8 +104,8 @@ python "$SCRIPTS/phase3_followup_variants.py" --check \
   || die "driver variants are stale -- rerun phase3_followup_variants.py and commit"
 if [ "$DRYRUN" -eq 0 ]; then
     echo "  allocation: $SLURM_JOB_NUM_NODES nodes -- $SLURM_JOB_NODELIST"
-    [ "${SLURM_JOB_NUM_NODES:-0}" -ge 3 ] \
-      || die "this job holds ${SLURM_JOB_NUM_NODES} nodes; the follow-up runs 3 concurrently."
+    [ "${SLURM_JOB_NUM_NODES:-0}" -ge 2 ] \
+      || die "this job holds ${SLURM_JOB_NUM_NODES} nodes; round 2 runs 2 slices concurrently."
 fi
 
 if [ -f "$MARKER" ]; then
@@ -114,10 +116,10 @@ else
     if [ "$DRYRUN" -eq 1 ]; then
         echo "  DRYRUN: skipping preflight; assuming GO"
     else
-        python "$SCRIPTS/phase3_followup_preflight.py" -n 32 \
-          2>&1 | tee "$LOGS/relic_p3fu_preflight_${JOBID}.log"
-        [ "${PIPESTATUS[0]}" -eq 0 ] || die "preflight did not pass -- read the F1-F3 lines
-       in $LOGS/relic_p3fu_preflight_${JOBID}.log.  Nothing was invalidated."
+        python "$SCRIPTS/phase3_followup_preflight.py" -n 3 \
+          2>&1 | tee "$LOGS/relic_p3fu2_preflight_${JOBID}.log"
+        [ "${PIPESTATUS[0]}" -eq 0 ] || die "preflight did not pass -- read the G1 lines
+       in $LOGS/relic_p3fu2_preflight_${JOBID}.log.  Nothing was invalidated."
     fi
 
     banner "Stage 2: invalidate"
@@ -128,17 +130,17 @@ else
     fi
 fi
 
-banner "Stage 3: four slices on three nodes"
-echo "  per-slice logs: $LOGS/relic_p3fu_${JOBID}_<label>.out"
-declare -A RC
-run_slice xi1_e09  make_relic_grid_vP_fu_e09.py            2083 & P1=$!
-run_slice xi25_e10 make_relic_grid_vP_xi_ini_2.5_fu_e10.py 1623 & P2=$!
-( run_slice xi25_e09 make_relic_grid_vP_xi_ini_2.5_fu_e09.py 1301; r1=$?
-  run_slice xi1_e10  make_relic_grid_vP_fu_e10.py             460; r2=$?
-  exit $(( r1 != 0 || r2 != 0 )) ) & P3=$!
-wait $P1; RC[xi1_e09]=$?
-wait $P2; RC[xi25_e10]=$?
-wait $P3; RC[xi25_e09+xi1_e10]=$?
+banner "Stage 3: two slices, one node each"
+echo "  per-slice logs: $LOGS/relic_p3fu2_${JOBID}_<label>.out"
+declare -A RC PID
+for spec in "xi1_e09 make_relic_grid_vP_fu2_e09.py 2083" \
+            "xi1_e10 make_relic_grid_vP_fu2_e10.py  460"; do
+    set -- $spec
+    run_slice "$1" "$2" "$3" & PID[$1]=$!
+done
+for label in "${!PID[@]}"; do
+    wait "${PID[$label]}"; RC[$label]=$?
+done
 
 banner "Stage 4: report"
 fail=0
@@ -150,7 +152,7 @@ if [ "$DRYRUN" -eq 0 ]; then
     python "$SCRIPTS/phase3_followup_report.py" || echo "  (report failed -- the grids are unaffected)"
 fi
 if [ "$fail" -eq 0 ]; then
-    echo; echo "Follow-up complete.  Commit GCE/output/relic (incl. the marker) on cluster-relic-vP."
+    echo; echo "Round 2 complete.  Commit GCE/output/relic (incl. the round-2 marker) on cluster-relic-vP."
 else
     echo; echo "A slice returned non-zero -- read its log.  Resubmitting resumes from the checkpoints."
 fi
