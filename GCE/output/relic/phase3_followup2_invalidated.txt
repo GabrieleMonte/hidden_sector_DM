@@ -1,0 +1,3 @@
+invalidated 2026-10-13 07:56:07 at commit a2b6719ed012f1d30852ade9d6918f9c2a783511
+relic_grid_vP_eps1e-09.npz: cleared cols 0-66 (2083 nodes), 0 finished nodes kept
+relic_grid_vP_eps1e-10.npz: cleared cols 57-66 (460 nodes), 1623 finished nodes kept
