@@ -138,7 +138,8 @@ def _merge(nshards, outputs):
         base._set_coupling("secluded" if base.RUN_SECLUDED else float(only))
         shape = ((len(base.EPS_SECLUDED), base.N_MX, base.N_RV) if base.RUN_SECLUDED
                  else (base.N_MX, base.N_RV))
-        coupling_relic, sigmav, done = base.load_state(path, shape, eps, backup=False)
+        coupling_relic, sigmav, status, done = base.load_state(path, shape, eps,
+                                                               backup=False)
 
         added = 0
         for k in range(nshards):
@@ -150,10 +151,12 @@ def _merge(nshards, outputs):
                 take = d["done_mask"] & ~done
                 coupling_relic[..., take] = d["coupling_relic"][..., take]
                 sigmav[..., take] = d["sigmav"][..., take]
+                if "status" in d:                      # shards predating status
+                    status[..., take] = d["status"][..., take]
             done |= take
             added += int(take.sum())
 
-        base._save(path, eps, coupling_relic, sigmav, done)
+        base._save(path, eps, coupling_relic, sigmav, done, status)
         print(f"  {path.name}: merged {added} nodes, "
               f"{int((done & ~base.off_grid).sum())}/{base.N_VALID} done")
 

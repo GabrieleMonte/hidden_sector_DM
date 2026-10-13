@@ -92,6 +92,24 @@ N_MX, N_RV, N_COUPLING = 46, 67, 8         # coarse (mX, rv) mesh; alpha_X per n
                                          # reverting would make load_state discard it
                                          # and re-solve all 1053 nodes.
 ONLY_RV_COLUMNS = None                   # None = queue every rv column
+
+# Why a node has no coupling.  coupling_relic is NaN for all of these, which on
+# its own cannot say whether the number is missing or whether no coupling
+# exists -- opposite statements for a downstream fit.  Stored as `status`.
+STATUS_UNRECORDED  = -1                  # written before status was recorded, or
+                                         # never attempted (incl. off-grid nodes)
+STATUS_OK          = 0                   # a crossing was found
+STATUS_SOLVE_FAILED = 1                  # too few finite Omega samples to
+                                         # interpolate: the solves failed
+STATUS_NO_SOLUTION = 2                   # Omega never reaches the target on the
+                                         # sampled axis; no coupling solves this
+                                         # node.  Physics, not a shortfall.
+STATUS_OFF_AXIS    = 3                   # bracketed, but the interpolant landed
+                                         # outside the sampled axis
+
+STATUS_NAMES = {STATUS_UNRECORDED: "unrecorded", STATUS_OK: "ok",
+                STATUS_SOLVE_FAILED: "solve_failed",
+                STATUS_NO_SOLUTION: "no_solution", STATUS_OFF_AXIS: "off_axis"}
 COUPLING_LIMS = {                          # per-output alpha_X axis; load_state checks it, so
     None:        (2e-5, 2e-2),           # changing an entry resets that output's file.
     1e-9:        (2e-5, 1.0),            # KEEP.  Was (2e-5, 2e-2); the Phase-3 campaign
@@ -323,14 +341,23 @@ def relic_coupling(omega):
     Pchip is local and shape-preserving, so on monotone data the result
     cannot leave the interval its neighbouring samples span.
     """
+    return _crossing(omega)[0]
+
+
+def _crossing(omega):
+    """(coupling, status) -- relic_coupling's value and why it is what it is.
+
+    Split out so the grid can record the reason without relic_coupling's own
+    signature changing; see the STATUS_* constants.
+    """
     finite = np.isfinite(omega) & (omega > 0)
     if finite.sum() < 4:
-        return np.nan
+        return np.nan, STATUS_SOLVE_FAILED
 
     om, ax = omega[finite], COUPLING[finite]
     if not (om.min() <= OCH2_TARGET <= om.max()):
-        return np.nan            # crossing outside the sampled range: report
-                                 # honestly as absent instead of extrapolating
+        return np.nan, STATUS_NO_SOLUTION   # crossing outside the sampled range:
+                                 # report honestly as absent, never extrapolate
 
     order = np.argsort(om)                                   # Omega h^2 ascending
     log_om, log_ax = np.log(om[order]), np.log(ax[order])
@@ -340,7 +367,7 @@ def relic_coupling(omega):
     # the ties rather than let a worker die mid-grid.
     keep = np.concatenate(([True], np.diff(log_om) > 0.0))
     if keep.sum() < 2:
-        return np.nan
+        return np.nan, STATUS_NO_SOLUTION
 
     interp = PchipInterpolator(log_om[keep], log_ax[keep])
     crossing = float(np.exp(interp(np.log(OCH2_TARGET))))
@@ -348,8 +375,8 @@ def relic_coupling(omega):
     # The crossing has to be a coupling we sampled between.  Anything outside
     # the axis is the interpolant leaving the data, not a physical answer.
     if not (ax.min() <= crossing <= ax.max()):
-        return np.nan
-    return crossing
+        return np.nan, STATUS_OFF_AXIS
+    return crossing, STATUS_OK
 
 
 def sigmav_swave(mX, mY, alphaX):
@@ -365,16 +392,18 @@ def node_secluded(task):
     """(i, j) -> alpha_X_relic and <sigma v> for every eps in EPS_SECLUDED."""
     i, j, mX, mY = task
     omega = np.array([omega_h2_secluded(mX, mY, a) for a in COUPLING])   # (N_COUPLING, 3)
-    alpha = np.array([relic_coupling(omega[:, e]) for e in range(len(EPS_SECLUDED))])
-    return i, j, alpha, np.array([sigmav_swave(mX, mY, a) for a in alpha])
+    found = [_crossing(omega[:, e]) for e in range(len(EPS_SECLUDED))]
+    alpha = np.array([c for c, _ in found])
+    status = np.array([s for _, s in found], np.int8)
+    return i, j, alpha, np.array([sigmav_swave(mX, mY, a) for a in alpha]), status
 
 
 def node_joint(task):
     """(i, j) -> alpha_X_relic and <sigma v> at a single eps."""
     i, j, mX, mY, eps = task
     omega = np.array([omega_h2_joint(mX, mY, a, eps) for a in COUPLING])
-    alpha = relic_coupling(omega)
-    return i, j, alpha, sigmav_swave(mX, mY, alpha)
+    alpha, status = _crossing(omega)
+    return i, j, alpha, sigmav_swave(mX, mY, alpha), np.int8(status)
 
 
 # ---- state: load / seed / save -------------------------------------
@@ -397,9 +426,10 @@ def load_state(path, shape, eps, backup=True):
     `done` is per node, shape (N_MX, N_RV); off-grid nodes start done."""
     alpha = np.full(shape, np.nan)
     sigmav = np.full(shape, np.nan)
+    status = np.full(shape, STATUS_UNRECORDED, np.int8)
     done = off_grid.copy()
     if not (path.exists() and SEED_FROM_COARSE):
-        return alpha, sigmav, done
+        return alpha, sigmav, status, done
 
     with np.load(path) as saved:
         # A file must not mix Phase-3 and legacy nodes: they differ by up to
@@ -433,7 +463,7 @@ def load_state(path, shape, eps, backup=True):
         if ix is None or jx is None:
             print(f"  {path.name}: mesh does not embed in {N_MX}x{N_RV} "
                   f"-- starting fresh")
-            return alpha, sigmav, done
+            return alpha, sigmav, status, done
 
         if "done_mask" in saved:                       # written by this version
             old_done = saved["done_mask"]
@@ -448,6 +478,11 @@ def load_state(path, shape, eps, backup=True):
         else:
             alpha[sel] = saved["coupling_relic"]
             sigmav[sel] = saved["sigmav"]
+        if "status" in saved:                          # absent in older grids,
+            if alpha.ndim == 3:                        # which keep UNRECORDED
+                status[np.ix_(np.arange(shape[0]), ix, jx)] = saved["status"]
+            else:
+                status[sel] = saved["status"]
         done[sel] |= old_done
 
         n_old = int(saved["log_mX"].size * saved["log_rv"].size)
@@ -458,13 +493,17 @@ def load_state(path, shape, eps, backup=True):
 
     done |= off_grid                                    # never queue an off-grid node
     print(f"  {path.name}: reusing {int((done & ~off_grid).sum())} finished nodes")
-    return alpha, sigmav, done
+    return alpha, sigmav, status, done
 
 
-def _save(path, eps, coupling_relic, sigmav, done):
+def _save(path, eps, coupling_relic, sigmav, done, status=None):
+    """Write one grid.  `status` says why each NaN in coupling_relic is NaN;
+    omitting it records UNRECORDED rather than claiming something untrue."""
+    if status is None:
+        status = np.full(np.shape(coupling_relic), STATUS_UNRECORDED, np.int8)
     np.savez(path, log_mX=log_mX, log_rv=log_rv, mX_grid=mX_grid, mY_grid=mY_grid,
              coupling_axis=COUPLING, eps=np.atleast_1d(eps), coupling_relic=coupling_relic,
-             sigmav=sigmav, done_mask=done, xi_ini=XI_INI,
+             sigmav=sigmav, done_mask=done, status=status, xi_ini=XI_INI,
              phase3=bool(PHASE3_KW), portal=PORTAL,
              n_done=int((done & ~off_grid).sum()))
 
@@ -507,16 +546,17 @@ def run_secluded(ncores):
     path = OUT_DIR / f"relic_grid_{TAG}_eps_secluded.npz"
     eps = np.array(EPS_SECLUDED)
     _set_coupling("secluded")
-    coupling_relic, sigmav, done = load_state(path, (len(eps), N_MX, N_RV), eps)
+    coupling_relic, sigmav, status, done = load_state(path, (len(eps), N_MX, N_RV), eps)
 
     def on_result(res):
-        i, j, a, sv = res
+        i, j, a, sv, st = res
         coupling_relic[:, i, j] = a
         sigmav[:, i, j] = sv
+        status[:, i, j] = st
         done[i, j] = True
 
     _run_pool(node_secluded, _pending(done), ncores, "secluded",
-              on_result, lambda: _save(path, eps, coupling_relic, sigmav, done))
+              on_result, lambda: _save(path, eps, coupling_relic, sigmav, done, status))
     print(f"secluded: {np.isfinite(sigmav).sum()}/{len(eps) * N_VALID} solved "
           f"-> {path.name}")
 
@@ -525,17 +565,18 @@ def run_joint(eps, ncores):
     """alpha_X_relic and <sigma v> at a single eps via the joint solver."""
     path = OUT_DIR / f"relic_grid_{TAG}_eps{eps:.0e}.npz"
     _set_coupling(eps)
-    coupling_relic, sigmav, done = load_state(path, (N_MX, N_RV), eps)
+    coupling_relic, sigmav, status, done = load_state(path, (N_MX, N_RV), eps)
 
     def on_result(res):
-        i, j, a, sv = res
+        i, j, a, sv, st = res
         coupling_relic[i, j] = a
         sigmav[i, j] = sv
+        status[i, j] = st
         done[i, j] = True
 
     tasks = [t + (eps,) for t in _pending(done)]
     _run_pool(node_joint, tasks, ncores, f"joint {eps:.0e}",
-              on_result, lambda: _save(path, eps, coupling_relic, sigmav, done))
+              on_result, lambda: _save(path, eps, coupling_relic, sigmav, done, status))
     print(f"joint {eps:.0e}: {np.isfinite(sigmav).sum()}/{N_VALID} solved "
           f"-> {path.name}")
 
@@ -550,7 +591,7 @@ def dry_run():
                            np.array(EPS_SECLUDED), (len(EPS_SECLUDED), N_MX, N_RV)))
     for path, eps, shape in outputs:
         _set_coupling(eps if np.isscalar(eps) else "secluded")
-        coupling_relic, sigmav, done = load_state(path, shape, eps, backup=False)
+        coupling_relic, sigmav, _status, done = load_state(path, shape, eps, backup=False)
         left = len(_pending(done))
         todo += left
         print(f"  {path.name}: {left} of {N_VALID} nodes still to solve"
