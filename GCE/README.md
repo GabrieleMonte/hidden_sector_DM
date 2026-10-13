@@ -71,8 +71,8 @@ built at; `ROIS` holds the 40x40 deg window and its north / south halves, with
 
 **`gce_data.py`** — `load_sed(model, region)` and `load_covariance(...)` return
 the excess `E^2 dPhi/dE` on the 14 Table III bins and the Eq. 18 covariance
-(statistical diagonal plus truncated interstellar-emission-model systematics).
-`region` is `'both'`, `'north'` or `'south'`.
+(statistical diagonal plus the truncated `Sigma_ij,mod`). `region` is `'both'`,
+`'north'` or `'south'`; `sigma_mod_scaling` is `'paper'` or `'flux'`, below.
 
 **`likelihood.py`** — the fit.
 ```python
@@ -143,11 +143,23 @@ rather than quietly standing in. With a runner in hand,
   direct arm) and 16 for a Dirac pair (the portal models), read off
   `model.include_antiparticlesX`. A portal region therefore sits a factor two
   above a Majorana comparison at equal flux — say so wherever the two overlap.
+- **A hemisphere needs a prescription for `Sigma_ij,mod`,** which Zenodo ships
+  for the full window only. `sigma_mod_scaling='paper'` (the default) uses the
+  paper's flat `0.55^2` / `0.45^2`, its share of the window's log-likelihood.
+  `'flux'` rescales bin by bin as `(phi^reg_i phi^reg_j)/(phi_i phi_j)` and runs
+  1.5-4x wider in the south; it is what every fit before this switch used, so
+  pass it to reproduce one. The choice moves `p`-values, not masses: the paper
+  gets `chi2 = 17.1/12` (`p = 0.15`) for `b bbar` in the south.
+- **`'BestFit'` is a different emission model in each region** — XLIX in the
+  full window, XV in the north, XLVIII in the south. A ratio taken between two
+  regions carries that change of model with it.
 - **`alphaX` does not enter the fit.** Branching ratios depend on `mY` alone and
   templates are built at `<sigma v> = 1`, so no coupling reaches the prediction.
-- **The halo is fixed inside a contour.** Templates are built at `HALO_2112`;
-  `rho_local` uncertainty is applied afterwards, to `<sigma v>` only. Present it
-  as a contour plus a shaded band, not a merged region.
+- **The halo is fixed inside a contour.** Templates are built at `HALO_2112`,
+  whose `rho_local` is the paper's 0.4 GeV/cm^3 — not the 0.44 of
+  `RHO_LOCAL_PRIOR`, which is applied afterwards, to `<sigma v>` only. Present
+  it as a contour plus a shaded band, not a merged region. Building at 0.44
+  instead would raise `Jbar` by 1.21 and lower every `<sigma v>` by 17%.
 - **`default_ebins` must reach below the lowest GCE bin** (0.275 GeV) once
   rebinned, or `cascade_template` / `direct_template` raise on the empty bin.
   `e_min = 0.02 GeV` has the margin.

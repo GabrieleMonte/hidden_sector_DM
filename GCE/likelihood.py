@@ -34,17 +34,20 @@ from .spectrum import cascade_flux, default_ebins, direct_flux
 # ---- the measured side ---------------------------------------------------
 
 def measurement(region: str = "both", model: str = "BestFit",
-                n_pc: int | None = 3):
+                n_pc: int | None = 3, sigma_mod_scaling: str = "paper"):
     """The measured spectrum and the inverse of its covariance, `(phi, Cinv)`.
 
     `phi` is E^2 dPhi/dE on the 14 bins [GeV cm^-2 s^-1 sr^-1], `Cinv` its inverse.
 
     Call once and reuse: the inverse is the only real cost here, and it does not
-    depend on the model point.  Arguments go straight to `gce_data`.
+    depend on the model point.  Arguments go straight to `gce_data`;
+    `sigma_mod_scaling` selects how Sigma_ij,mod is carried to a hemisphere and
+    is documented on `gce_data.load_covariance`.
     """
     phi = gd.load_sed(model, region)
-    return phi, np.linalg.inv(gd.load_covariance(n_pc=n_pc, model=model,
-                                                 region=region))
+    return phi, np.linalg.inv(
+        gd.load_covariance(n_pc=n_pc, model=model, region=region,
+                           sigma_mod_scaling=sigma_mod_scaling))
 
 
 # ---- the predicted side --------------------------------------------------

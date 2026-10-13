@@ -7,19 +7,31 @@ masked out.  `region` chooses how much of that window to use: 'both' takes all
 of it, 'north' and 'south' take its b > 0 and b < 0 halves.  The halves share
 the window, the mask and the bins, so they are not separate regions of interest;
 they are tabulated only for the five best-fitting emission models, not all 80.
+Those ranks are per region: 'BestFit' is Model XLIX in the full window, Model XV
+in the north and Model XLVIII in the south (Sec. V B), so a ratio taken between
+two regions carries a change of emission model with it.
 
 Two errors come with each bin, and Eq. 18 of the paper combines them into the
 covariance the fit uses:
 
     C_ij = sigma_i^2 delta_ij + Sigma_ij,mod^trunc
 
-sigma_i is statistical and uncorrelated between bins.  Sigma_ij,mod covers the
-choice of interstellar-emission model, and is both larger and strongly
-correlated: its mean off-diagonal correlation is 0.82, and its leading principal
-component, which carries 86% of its variance, has the same sign in all 14 bins.
-A shared mode of that size is what a fit with one free normalisation is least
-able to tell apart from a signal, so the full C is inverted rather than just its
-diagonal.
+sigma_i is statistical and uncorrelated between bins.  Sigma_ij,mod is not a
+spread over emission models: Sec. VI A builds it from the GCE-like flux the same
+template fit recovers in 22 *other* 40 deg x 40 deg windows along the disk
+(20 deg <= |l| <= 70 deg, best-fit model in each).  It therefore measures the
+bias floor of the fitting procedure in a window of that size, and carries no
+dependence on how bright the excess is.  It is both larger than sigma_i and
+strongly correlated: its mean off-diagonal correlation is 0.82, and its leading
+principal component, which carries 86% of its variance, has the same sign in all
+14 bins.  A shared mode of that size is what a fit with one free normalisation is
+least able to tell apart from a signal, so the full C is inverted rather than
+just its diagonal.
+
+Sec. VII of the paper instead describes Sigma_ij,mod as a spread over all 80
+emission models.  That contradicts Sec. VI A, which notes such a matrix would be
+roughly 2x larger; the shipped matrix reproduces the paper's PC table exactly, so
+it is the Sec. VI A one.
 """
 
 from __future__ import annotations
@@ -99,8 +111,16 @@ def _sigma_stat(model: str, region: str) -> np.ndarray:
     return 0.5 * (hi - lo)
 
 
+# Share of the 40x40 window's total log-likelihood carried by each hemisphere.
+# This is how the paper scales Sigma_ij,mod to a half window (Sec. VII, in the
+# text below Eq. 18): "we will define Sigma_ij,mod in the north (south) to be
+# 0.55^2 (0.45)^2 as large as Sigma_ij,mod in the full sky".
+LOGL_SHARE = {"both": 1.0, "north": 0.55, "south": 0.45}
+
+
 def load_covariance(n_pc: int | None = 3, include_stat: bool = True,
-                    model: str = "BestFit", region: str = "both") -> np.ndarray:
+                    model: str = "BestFit", region: str = "both",
+                    sigma_mod_scaling: str = "paper") -> np.ndarray:
     """Fit covariance C_ij of Eq. 18 [(GeV cm^-2 s^-1 sr^-1)^2].
 
     `n_pc` says how many principal components of the systematics matrix to
@@ -110,26 +130,52 @@ def load_covariance(n_pc: int | None = 3, include_stat: bool = True,
 
     `include_stat=True` (the default) then adds the statistical variances along
     the diagonal, which gives the full C of Eq. 18.  Set it to False to get the
-    systematics on their own.
+    systematics on their own.  The statistical part is exact in every region.
 
-    ASSUMPTION for a hemisphere.  Zenodo ships Sigma_ij,mod for the full window
-    only, and it cannot be rebuilt from the spectra (the halves exist for five
-    models, not 80).  A hemisphere therefore reuses the full-window correlation
-    matrix and fractional variances, rescaled to its own spectrum:
+    HEMISPHERES.  Zenodo ships Sigma_ij,mod for the full window only, and it
+    cannot be rebuilt from the spectra (the halves exist for five models, not
+    80), so a half window needs a prescription.  `sigma_mod_scaling` picks it:
 
-        Sigma^reg_ij = Sigma_ij * (phi^reg_i phi^reg_j) / (phi_i phi_j)
+    'paper' (the default) takes the paper's,
 
-    i.e. the systematic is taken to be multiplicative in the flux -- a
-    leading-order guess, not a measurement.  The statistical part stays exact.
+        Sigma^reg_ij = LOGL_SHARE[region]^2 * Sigma_ij ,
+
+    a flat factor per region.  It leaves the correlation matrix untouched and
+    makes a half window *less* uncertain than the whole, on the grounds that it
+    carries less of the log-likelihood.  Sigma_ij,mod is a property of the
+    window and of the fitting procedure, not of the emission model (see the
+    module docstring), so this does not depend on `model` either.
+
+    'flux' instead rescales bin by bin to the region's own spectrum,
+
+        Sigma^reg_ij = Sigma_ij * (phi^reg_i phi^reg_j) / (phi_i phi_j) ,
+
+    i.e. takes the systematic to be multiplicative in the measured flux.  That
+    is a leading-order guess with no support in how Sigma_ij,mod is built, and
+    it runs 1.5-4x wider than 'paper' in the south, widest at low energy.  It is
+    kept so that results produced before the default changed stay reproducible.
+    Its denominator is always Model XLIX in the full window, so for a hemisphere
+    the ratio carries a change of emission model as well as of region.
     """
     Sigma = np.load(_COV / "cov_mat_21Dec02.npy")
     if Sigma.shape != (N_EBINS, N_EBINS):
         raise ValueError(f"expected a {N_EBINS}x{N_EBINS} covariance, "
                          f"got {Sigma.shape}")
 
-    if (model, region) != ("BestFit", "both"):
-        scale = load_sed(model, region) / load_sed("BestFit", "both")
-        Sigma = Sigma * np.outer(scale, scale)
+    if sigma_mod_scaling == "paper":
+        try:
+            share = LOGL_SHARE[region]
+        except (KeyError, TypeError):
+            raise ValueError(f"unknown region {region!r}; "
+                             f"choose one of {sorted(LOGL_SHARE)}") from None
+        Sigma = Sigma * share ** 2
+    elif sigma_mod_scaling == "flux":
+        if (model, region) != ("BestFit", "both"):
+            scale = load_sed(model, region) / load_sed("BestFit", "both")
+            Sigma = Sigma * np.outer(scale, scale)
+    else:
+        raise ValueError(f"unknown sigma_mod_scaling {sigma_mod_scaling!r}; "
+                         f"choose 'paper' or 'flux'")
 
     if n_pc is not None:
         if not 0 < n_pc <= N_EBINS:
