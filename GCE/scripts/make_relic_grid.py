@@ -351,30 +351,48 @@ def _crossing(omega):
     signature changing; see the STATUS_* constants.
     """
     finite = np.isfinite(omega) & (omega > 0)
-    if finite.sum() < 4:
+    if finite.sum() < 2:
         return np.nan, STATUS_SOLVE_FAILED
 
-    om, ax = omega[finite], COUPLING[finite]
-    if not (om.min() <= OCH2_TARGET <= om.max()):
-        return np.nan, STATUS_NO_SOLUTION   # crossing outside the sampled range:
-                                 # report honestly as absent, never extrapolate
+    # The FIRST crossing, reading the coupling axis upward, and only the
+    # samples around it.  Omega ~ coupling^-p should fall everywhere, but the
+    # solved curves do not: 48 of 60 Higgs-portal probe curves rise somewhere
+    # (2026-10-13).  Fitting the whole axis sorts those branches together, and
+    # the interpolant can then return a coupling off the wrong one -- 10 of 30
+    # crossings moved when the fit was localised, one of them by 17x, from
+    # 8.9e-4 to the correct 1.5e-2.  A local window cannot make that mistake:
+    # it never looks past the first crossing.  make_relic_grid_vP.py reaches
+    # the same conclusion from the vector portals in relic_alphaX_local.
+    # A crossing is an adjacent pair of SOLVED samples that straddles the
+    # target downward.  Not simply the first sample below it: these curves can
+    # open below the target on a branch that carries no crossing information,
+    # and reading from there would report a coupling off that branch.
+    idx = np.flatnonzero(finite)
+    om_f = omega[idx]
+    straddle = np.flatnonzero((om_f[:-1] >= OCH2_TARGET) & (om_f[1:] < OCH2_TARGET))
+    if straddle.size == 0:
+        return np.nan, STATUS_NO_SOLUTION   # never falls through the target
+    c0 = int(straddle[0])
 
-    order = np.argsort(om)                                   # Omega h^2 ascending
-    log_om, log_ax = np.log(om[order]), np.log(ax[order])
+    lo, k = int(idx[c0]), int(idx[c0 + 1])  # the bracketing pair itself
 
-    # On the saturated shelf Omega can repeat to the last bit, and both Pchip
-    # and the cubic spline before it reject a non-increasing abscissa.  Drop
-    # the ties rather than let a worker die mid-grid.
-    keep = np.concatenate(([True], np.diff(log_om) > 0.0))
-    if keep.sum() < 2:
-        return np.nan, STATUS_NO_SOLUTION
+    win = idx[max(c0 - 1, 0):min(c0 + 3, idx.size)]
+    om, ax = omega[win], COUPLING[win]
 
-    interp = PchipInterpolator(log_om[keep], log_ax[keep])
-    crossing = float(np.exp(interp(np.log(OCH2_TARGET))))
+    if win.size >= 3 and lo >= win[0] and np.all(np.diff(om) < 0.0):
+        order = np.argsort(om)                               # Omega h^2 ascending
+        interp = PchipInterpolator(np.log(om[order]), np.log(ax[order]))
+        crossing = float(np.exp(interp(np.log(OCH2_TARGET))))
+    else:
+        # Too few points, the bracket outside the window, or not monotone
+        # through it: log-log linear on the bracketing pair, which is all the
+        # crossing is actually determined by.
+        t = np.log(OCH2_TARGET / omega[lo]) / np.log(omega[k] / omega[lo])
+        crossing = float(np.exp(np.log(COUPLING[lo])
+                                + t * np.log(COUPLING[k] / COUPLING[lo])))
 
-    # The crossing has to be a coupling we sampled between.  Anything outside
-    # the axis is the interpolant leaving the data, not a physical answer.
-    if not (ax.min() <= crossing <= ax.max()):
+    # It has to lie in the bracket it was read from.
+    if not (COUPLING[lo] <= crossing <= COUPLING[k]):
         return np.nan, STATUS_OFF_AXIS
     return crossing, STATUS_OK
 
