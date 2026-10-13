@@ -45,10 +45,10 @@
 DRYRUN=${PHASE3_FOLLOWUP_DRYRUN:-0}
 REPO=${PHASE3_FOLLOWUP_REPO:-/global/u1/g/gab97/secluded_DM}
 
-if [ "$DRYRUN" -eq 0 ]; then
-    module load python
-    source "$HOME/cosmo_env/bin/activate"
-fi
+# Both modes need the env: the rehearsal still runs variants --check and every
+# driver's --dry-run, and a bare Perlmutter login shell has no `python` at all.
+module load python
+source "$HOME/cosmo_env/bin/activate"
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
