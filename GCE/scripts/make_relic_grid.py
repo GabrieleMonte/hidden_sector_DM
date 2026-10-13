@@ -457,7 +457,7 @@ def load_state(path, shape, eps, backup=True):
         if not (np.array_equal(saved["coupling_axis"], COUPLING)
                 and np.array_equal(saved["eps"], np.atleast_1d(eps))):
             print(f"  {path.name}: alpha_X axis or eps changed -- starting fresh")
-            return alpha, sigmav, done
+            return alpha, sigmav, status, done
         ix = _embed(saved["log_mX"], log_mX)
         jx = _embed(saved["log_rv"], log_rv)
         if ix is None or jx is None:

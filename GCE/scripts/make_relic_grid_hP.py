@@ -70,6 +70,23 @@ LAM_LIMS = {
     "secluded": (2e-5, 1.0),
 }
 
+# Points on the lam axis per output.  The shared default is 8, which over
+# LAM_LIMS' 4.7 decades is a factor 4.69 per step.  That is too coarse for the
+# secluded outputs: run 59713507 found 2114 of 6249 crossings against the
+# earlier 2856 on a 2.3-decade axis of the same 8 points, losing 742 nodes that
+# sit right at the rv ~ 0.7 edge where Omega peaks near the target and
+# resolution decides.  The axis that found 2856 stepped by 2.13; 14 points over
+# the wider range step by 2.30, so this restores that resolution while keeping
+# the floor that supplies the 107 crossings below 5e-3.  (12 would step by 2.67
+# -- still coarser than what worked, so it would not recover all 742.)
+# Changing an entry resets that output's file: load_state compares the axis.
+N_LAM = {
+    None:       8,
+    1e-9:       8,
+    1e-10:      8,
+    "secluded": 14,
+}
+
 GX_MAJORANA = 2          # Majorana fermion DM: 2 spin states, no antiparticle
 GY_REAL_SCALAR = 1       # real scalar mediator: one degree of freedom
 
@@ -89,6 +106,19 @@ def _make_model(mX, mY, lam, antiY=False):
                        include_antiparticlesY=antiY)
 
 
+_BASE_SET_COUPLING = base._set_coupling
+
+
+def _set_coupling(eps=None):
+    """base._set_coupling, but with N_LAM's point count for this output.
+
+    The shared one reads a single module-level N_COUPLING; the Higgs portal
+    needs a different one per output, so this sets it before deferring.
+    """
+    base.N_COUPLING = N_LAM.get(eps, N_LAM[None])
+    _BASE_SET_COUPLING(eps)
+
+
 def _configure(xi_ini):
     """Point the shared driver at the Higgs portal.
 
@@ -98,6 +128,7 @@ def _configure(xi_ini):
     base.XI_INI = float(xi_ini)
     base._make_model = _make_model
     base.COUPLING_LIMS = LAM_LIMS
+    base._set_coupling = _set_coupling
     base.PORTAL = TAG_STEM
     base.PORTAL_KW = {}
     base.TAG = TAG_STEM if base.XI_INI == 1.0 else f"{TAG_STEM}_xi_ini_{base.XI_INI:g}"
@@ -217,9 +248,12 @@ def main():
     print(f"portal: HiggsPortal  xi_ini={base.XI_INI:g}  "
           f"gX={GX_MAJORANA} gY={GY_REAL_SCALAR} Majorana X  |  "
           f"Phase 3 {'ON' if base.PHASE3_KW else 'OFF'}  |  tag '{base.TAG}'")
+    lams = ", ".join(
+        ("default" if k is None else k if isinstance(k, str) else f"eps={k:g}")
+        + f" {v}" for k, v in N_LAM.items())
     print(f"grid: {base.N_MX} x {base.N_RV} = {base.N_VALID} valid (mX, mY) nodes, "
           f"mX in [{base.MX_LIM[0]:g}, {base.MX_LIM[1]:g}] GeV, "
-          f"rv <= {base.RV_MAX}  |  {base.N_COUPLING} lam, axis {axes}  |  "
+          f"rv <= {base.RV_MAX}  |  lam points: {lams}  |  axis {axes}  |  "
           f"out -> {base.OUT_DIR}")
 
     if args.dry_run:
