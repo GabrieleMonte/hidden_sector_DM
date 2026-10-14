@@ -155,11 +155,9 @@ rather than quietly standing in. With a runner in hand,
   regions carries that change of model with it.
 - **`alphaX` does not enter the fit.** Branching ratios depend on `mY` alone and
   templates are built at `<sigma v> = 1`, so no coupling reaches the prediction.
-- **The halo is fixed inside a contour.** Templates are built at `HALO_2112`,
-  whose `rho_local` is the paper's 0.4 GeV/cm^3 — not the 0.44 of
-  `RHO_LOCAL_PRIOR`, which is applied afterwards, to `<sigma v>` only. Present
-  it as a contour plus a shaded band, not a merged region. Building at 0.44
-  instead would raise `Jbar` by 1.21 and lower every `<sigma v>` by 17%.
+- **The halo is fixed inside a contour.** Templates are built at `HALO_2112`;
+  `rho_local` uncertainty is applied afterwards, to `<sigma v>` only. Present it
+  as a contour plus a shaded band, not a merged region.
 - **`default_ebins` must reach below the lowest GCE bin** (0.275 GeV) once
   rebinned, or `cascade_template` / `direct_template` raise on the empty bin.
   `e_min = 0.02 GeV` has the margin.
