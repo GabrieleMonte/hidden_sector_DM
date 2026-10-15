@@ -121,8 +121,16 @@ COUPLING_LIMS = {                          # per-output alpha_X axis; load_state
     "secluded":  (2e-5, 1.0),            # (the old secluded file EXTRAPOLATED 78 such nodes);
 }                                        # capped at 1 as for 1e-10. None = other joint eps
 
-SOLVE_TIMEOUT = 7200                     # s; Phase-3 nodes were observed to
-                                         # ~6200 s in the 2026-10 campaign
+SOLVE_TIMEOUT = 600                      # s; nothing that SUCCEEDS comes near this.
+                                         # Both 2026-10 probes capped every solve at
+                                         # 600 s and timed out zero of 2052 solves,
+                                         # across both solvers and all four portals;
+                                         # and over 95 finished eps=1e-9/1e-10 nodes
+                                         # the successful solves of a whole node
+                                         # total 3.8 min at the median.  7200 s only
+                                         # ever bought failures: 1862 of them in
+                                         # 59773233 + 59784544, at 2 h each plus a
+                                         # 2 h retry, which is the entire overrun.
 GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y/H (2026-09 audit:
                                          # gated handoffs bias Omega by 1.15-3.2x, smoothly in rv)
 XMAX_JOINT = 5e3                         # converged to <0.3% vs 1.5e4 at both rv extremes
