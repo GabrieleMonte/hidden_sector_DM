@@ -142,7 +142,10 @@ PHASE3_KW = dict(rho_switch_thresh=0.3,  # hand the joint solve to Phase 3 (the
                                          # speedup).  --no-phase3 clears this.
 
 NCORES = 4                               # default worker count; -n overrides
-CHECKPOINT_EVERY = 8                     # completed nodes between saves
+CHECKPOINT_EVERY = 1                     # completed nodes between saves; the stiff
+                                         # eps=1e-9/1e-10 nodes cost ~8 h each, so 8
+                                         # between saves leaves a shard writing nothing
+                                         # for ~64 h and losing it all at the wall
 SEED_FROM_COARSE = True                  # reuse a coarser run's finished nodes
 BACKUP_PREVIOUS  = False                 # history lives on cluster-relic-vP commits
 SEC_PER_NODE = 3000.0                    # converged mode, rough; low-rv nodes are ~5x faster
