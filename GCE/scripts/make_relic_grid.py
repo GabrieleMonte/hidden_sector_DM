@@ -121,6 +121,12 @@ COUPLING_LIMS = {                          # per-output alpha_X axis; load_state
     "secluded":  (2e-5, 1.0),            # (the old secluded file EXTRAPOLATED 78 such nodes);
 }                                        # capped at 1 as for 1e-10. None = other joint eps
 
+COUPLING_SWEEP_STOP = True               # solve the axis downward and stop one point past
+                                         # the crossing, leaving the rest NaN.  The axis
+                                         # itself is unchanged, so stored files still load.
+                                         # make_relic_grid_vP.py calls this ALPHAX_SWEEP_STOP
+                                         # but sweeps upward, which trims the cheap end.
+
 SOLVE_TIMEOUT = 600                      # s; nothing that SUCCEEDS comes near this.
                                          # Both 2026-10 probes capped every solve at
                                          # 600 s and timed out zero of 2052 solves,
@@ -417,10 +423,49 @@ def sigmav_swave(mX, mY, alphaX):
 
 # ---- one node per task (module level: Pool has to pickle these) ------
 
+def _sweep(evaluate, ncol):
+    """Omega_c h^2 over COUPLING, as a (N_COUPLING, ncol) array.
+
+    `evaluate(coupling)` returns one Omega per column -- the secluded node
+    solves every eps at once, the joint node a single one.
+
+    With COUPLING_SWEEP_STOP the axis is solved from the LARGEST coupling
+    downward and abandoned one point past the first Omega at or above
+    OCH2_TARGET in every column, so the crossing is bracketed from above and
+    the low end is never touched.  That end is where the joint solve is
+    pathologically stiff: 91% of the 1862 timeouts in the 2026-10 campaign sat
+    on the two lowest axis points, which cannot hold a crossing -- over 5257
+    solved cells the smallest one found is 0.0022, and those points are 2e-5
+    and 9.38e-5.  Skipped points stay NaN, which _crossing reads as "not
+    sampled" rather than as a failed solve.
+
+    Replayed against every complete curve on hand -- 96 joint and 144 secluded
+    from the portals probe, 60 from the Higgs-portal lam probe -- this returns
+    the identical crossing on all 257 of them, loses none, and leaves 29-45%
+    of the axis unsolved.
+    """
+    omega = np.full((N_COUPLING, ncol), np.nan)
+    if not COUPLING_SWEEP_STOP:
+        for k, a in enumerate(COUPLING):
+            omega[k] = evaluate(a)
+        return omega
+
+    bracketed = np.zeros(ncol, bool)
+    for k in range(N_COUPLING - 1, -1, -1):
+        omega[k] = evaluate(COUPLING[k])
+        bracketed |= np.isfinite(omega[k]) & (omega[k] >= OCH2_TARGET)
+        if bracketed.all():
+            if k - 1 >= 0:                   # one more past the crossing
+                omega[k - 1] = evaluate(COUPLING[k - 1])
+            break
+    return omega
+
+
 def node_secluded(task):
     """(i, j) -> alpha_X_relic and <sigma v> for every eps in EPS_SECLUDED."""
     i, j, mX, mY = task
-    omega = np.array([omega_h2_secluded(mX, mY, a) for a in COUPLING])   # (N_COUPLING, 3)
+    omega = _sweep(lambda a: omega_h2_secluded(mX, mY, a),
+                   len(EPS_SECLUDED))                                # (N_COUPLING, 3)
     found = [_crossing(omega[:, e]) for e in range(len(EPS_SECLUDED))]
     alpha = np.array([c for c, _ in found])
     status = np.array([s for _, s in found], np.int8)
@@ -430,7 +475,7 @@ def node_secluded(task):
 def node_joint(task):
     """(i, j) -> alpha_X_relic and <sigma v> at a single eps."""
     i, j, mX, mY, eps = task
-    omega = np.array([omega_h2_joint(mX, mY, a, eps) for a in COUPLING])
+    omega = _sweep(lambda a: omega_h2_joint(mX, mY, a, eps), 1)[:, 0]
     alpha, status = _crossing(omega)
     return i, j, alpha, sigmav_swave(mX, mY, alpha), np.int8(status)
 
