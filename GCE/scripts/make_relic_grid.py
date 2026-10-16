@@ -141,6 +141,8 @@ GOH_EXIT_THRESH = 1e99                   # converged mode: never exit on Gamma_Y
                                          # gated handoffs bias Omega by 1.15-3.2x, smoothly in rv)
 XMAX_JOINT = 5e3                         # converged to <0.3% vs 1.5e4 at both rv extremes
 RETRY_RTOL    = 1e-6                     # one retry at this rtol_value after a timeout
+REQUIRE_CONVERGED = True                 # discard a solve whose own 'converged' flag is
+                                         # False; see _NotConverged
 SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2,
                  rtol_value=1e-6)        # 1e-8 exceeds any timeout at rv=0.95 (>45 min);
                                          # 1e-6 solves those in ~1-6 min with identical
@@ -195,6 +197,18 @@ _set_coupling()
 
 
 # ---- Boltzmann solves ---------------------------------------------
+
+class _NotConverged(RuntimeError):
+    """A solve that ran to the end without meeting its convergence criterion.
+
+    Both solvers report this themselves in result['converged'], and the value
+    they return when it is False is not a freeze-out: if neither phase switch
+    fires, X stays pinned to chemical equilibrium and the yield is Boltzmann-
+    suppressed by orders of magnitude.  Treating those as valid is what put a
+    flat, lam-independent shelf into the 2026-10 Higgs-portal grids and turned
+    real crossings into "no solution".
+    """
+
 
 def _raise_timeout(signum, frame):
     raise TimeoutError
@@ -293,11 +307,18 @@ def omega_h2_secluded(mX, mY, alphaX):
     solve leaves NaN in that slot."""
     solver = BoltzmannSolver(cosmo, _make_model(mX, mY, alphaX))
     try:
-        bg_ics = timed_solve(solver.solve_boltzmann_chempot_3phase,
-                             return_bg_ICs=True, verbose=False,
-                             **SOLVER_KW)["bg_ICs"]
-    except Exception:
+        freeze_out = timed_solve(solver.solve_boltzmann_chempot_3phase,
+                                 return_bg_ICs=True, verbose=False,
+                                 **SOLVER_KW)
+    except Exception as e:
+        _log_nan(mX, mY, alphaX, np.nan, e)
         return np.full(len(EPS_SECLUDED), np.nan)
+
+    if REQUIRE_CONVERGED and not freeze_out["converged"]:
+        _log_nan(mX, mY, alphaX, np.nan, _NotConverged("freeze-out"))
+        return np.full(len(EPS_SECLUDED), np.nan)
+
+    bg_ics = freeze_out["bg_ICs"]
 
     omega = np.full(len(EPS_SECLUDED), np.nan)
     for i, eps in enumerate(EPS_SECLUDED):
@@ -322,6 +343,10 @@ def omega_h2_joint(mX, mY, alphaX, eps):
                             phase2_form="Y", verbose=False, **PHASE3_KW)
     except Exception as e:
         _log_nan(mX, mY, alphaX, eps, e)
+        return np.nan
+
+    if REQUIRE_CONVERGED and not joint["converged"]:
+        _log_nan(mX, mY, alphaX, eps, _NotConverged("joint"))
         return np.nan
 
     # phase_final == 3: Phase 3 already applied decay + dilution in-solver and

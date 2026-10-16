@@ -460,6 +460,37 @@ class BoltzmannSolver:
             else:
                 xs = np.linspace(x0 * 1.001, xf * 0.999, n_points)
 
+            # ----- Phase entry when the condition ALREADY holds -----
+            # A terminal event with direction=-1 fires only on a downward
+            # crossing, so a switch condition that is already satisfied when a
+            # window opens is never seen.  At small coupling that is the normal
+            # case -- Gamma_ann/H goes as lam^4 and the cannibal rate as lam^6,
+            # so both start below their thresholds -- and the run then rides
+            # Phase 1 to the end with muX pinned at 0, holding X in chemical
+            # equilibrium and Boltzmann-suppressing its yield by ~12 orders.
+            # Enter the phase directly instead of waiting for a crossing that
+            # cannot happen.
+            if phase == 1 and ann_switch_event(x0, y0_eq) <= 0.0:
+                phase = 1.5
+                state["x_switch_QSSA"] = x0
+                y0_QSSA = [y0_eq[0], 0.0]
+                if verbose:
+                    _, Gamma_now = dlnxi_dx_equilibrium(x0, y0_eq[0])
+                    print(f"\n  -> Phase 1.5 (QSSA) at x = {x0:.2f}"
+                          f" (Gamma_over_H_ann = {Gamma_now:.1e}, already"
+                          f" below threshold at window start)")
+
+            if phase == 1.5 and cannibal_switch_event(x0, y0_QSSA) <= 0.0:
+                phase = 2
+                state["x_switch_full"] = x0
+                y0_full = [y0_QSSA[0], y0_QSSA[1], 0.0]
+                if verbose:
+                    can_now = estimate_cannibal_rate(x0, y0_QSSA[0], y0_QSSA[1])
+                    print(f"\n  -> Phase 2 (full) at x = {x0:.2f}"
+                          f" (Gamma_over_H_can={can_now:.1e},"
+                          f" muX={y0_QSSA[1]:.2f}, already below threshold"
+                          f" at window start)")
+
             # ----- PHASE 1 -----
             if phase == 1:
                 sol = solve_ivp(BEQs_eq, (x0, xf), y0_eq, t_eval=xs,
@@ -1243,6 +1274,46 @@ class BoltzmannSolver:
             xs = np.linspace(x0 * 1.001, xf * 0.999, n_points) if x0 > 1 \
                  else np.logspace(np.log10(x0 * 1.001),
                                   np.log10(xf * 0.999), n_points)
+
+            # ev_ann and ev_can are terminal with direction=-1, so neither can
+            # fire on a condition that already holds when a window opens --
+            # the usual case at small coupling, where Gamma_ann/H goes as
+            # lam^4 and the cannibal rate as lam^6 and both start below their
+            # thresholds.  The run would then ride Phase 1 to the end with muX
+            # pinned at 0, holding X in chemical equilibrium.  Enter the phase
+            # directly, exactly as the dlnS/dN checks below already do.
+            if phase == 1 and ev_ann(x0, y_eq) <= 0.0:
+                x_switch_QSSA = x0
+                ratio = sm_lock_ratio(x0, y_eq[0], 0.0, 0.0)
+                if use_inverse_decay and ratio > SMlock_thr:
+                    phase = '1.5S'
+                    y_SMlock = [0.0]
+                    x_to_SMlock = x0
+                    if not smlock_cache:
+                        _build_gtot_splines(x0)
+                    if verbose:
+                        print(f"      Phase 1 -> 1.5S at x={x0:.2f}"
+                              f"  (SM-lock ratio = {ratio:.2e}, initial)")
+                else:
+                    phase = 1.5
+                    y_QSSA = [y_eq[0], 0.0]
+                    if verbose:
+                        print(f"      Phase 1 -> 1.5 at x={x0:.2f}"
+                              f"  (SM-lock ratio = {ratio:.2e}, initial)")
+
+            if phase == 1.5 and ev_can(x0, y_QSSA) <= 0.0:
+                x_to_P2 = x0
+                if phase2_form == 'Y':
+                    th0 = _thermo(x0, y_QSSA[0], 0.0, 0.0)
+                    y_full = [y_QSSA[0],
+                              y_QSSA[1] + th0['lnYeqX'],
+                              th0['lnYeqY']]
+                else:
+                    y_full = [y_QSSA[0], y_QSSA[1], 0.0]
+                phase = 2
+                if verbose:
+                    print(f"      Phase 1.5 -> 2 at x={x0:.2f}"
+                          f"  muX={y_QSSA[1]:.3f}  (initial)")
 
             if phase == 1:
                 if (GammaY > 0 and np.isfinite(Sdot_switch_thresh)
