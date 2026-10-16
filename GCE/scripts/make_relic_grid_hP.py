@@ -33,16 +33,27 @@ cubic spline through that flat shelf oscillates (it returned lam = 0.0 at the
 rv = 0.950 corner).  LAM_LIMS keeps every sample in the live region instead.
 Measured crossings sit near lam ~ 0.05-0.3.
 
-The secluded outputs leave most nodes without a lam -- 74 / 59 / 19 % finite at
-eps = 1e-11 / 5e-12 / 1e-12 -- and that is the physics, not a short axis.  Do
-not widen LAM_LIMS to chase it.  omega_vs_lam_hP.py probed 1e-7 to 1, which is
-2.3 decades below the floor and ~28 decades of Omega, at 16 nodes carrying no
-crossing at eps = 1e-12: all 16 peak below 0.12 (highest 0.094), and below
-lam ~ 1e-5 Omega is flat to the last bit, because X stops annihilating at all
-and the yield can no longer rise.  phi at sin(theta) = 1e-12 then dilutes that
-ceiling by many orders.  Across 60 (node, eps) cases, "grid found no lam"
-and "Omega never reaches 0.12" agree 58 times.  Crossings survive only near
-rv -> 1 (controls 0.727-0.950, no-crossing nodes 0.146-0.695).
+WITHDRAWN (2026-10-15)
+----------------------
+This file used to claim that the empty secluded region -- only 74 / 59 / 19 %
+of nodes finite at eps = 1e-11 / 5e-12 / 1e-12 -- "is the physics, not a short
+axis", on the grounds that Omega goes flat below lam ~ 1e-5 "because X stops
+annihilating at all and the yield can no longer rise".
+
+That is wrong, and it was self-contradictory: less annihilation cannot give a
+SMALLER relic, yet the shelf sat orders of magnitude BELOW the live branch.
+The flat shelf was a solver artifact.  Both phase switches are terminal events
+with direction=-1, and at small lam the rates (Gamma_ann/H ~ lam^4, cannibal
+~ lam^6) start below their thresholds, so neither can fire; the run stayed in
+Phase 1 with X pinned to chemical equilibrium and the yield Boltzmann
+suppressed.  The solver reported converged=False and this driver ignored it.
+Fixed in 1d99f58edb.  At mX=17.02 rv=0.532, lam=3.16e-3 went from Omega =
+3.3e-07 to 4.07, and the node -- recorded as NO_SOLUTION -- in fact crosses
+0.12 at lam ~ 0.0097.
+
+So the secluded grids here are NOT to be trusted and must be rebuilt, and the
+"saturation" reading of omega_vs_lam_hP.py's 16 no-crossing nodes goes with
+them.  Every number in the AXIS note above was measured on the same artifact.
 """
 
 import argparse
