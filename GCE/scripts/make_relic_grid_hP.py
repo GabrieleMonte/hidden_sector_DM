@@ -74,27 +74,31 @@ from hidden_sector_DM.HiddenSectorDM import HiggsPortal           # noqa: E402
 # Sampled lam axis per output, as (lo, hi); lam is dimensionless.  load_state
 # records the axis and compares it exactly, so changing an entry resets that
 # output's file.  See AXIS above for why this is not the vector portals'.
+# Re-derived 2026-10-16 from lam_crossing_survey_hP.py (job 59853415), 30 nodes
+# over mX 16-95 GeV and rv 0.10-0.93, on the fixed solver.  All 142 crossings
+# land in [0.004769, 0.1764]; the floor below is 4.8x under the smallest and
+# the ceiling 5.7x over the largest.  The old 2e-5 floor was set against the
+# equilibrium-shelf artifact and is now actively harmful: nothing crosses down
+# there, and since 1d99f58edb those decades do genuine Phase-2 integration, so
+# a single solve can exceed 300 s.
 LAM_LIMS = {
-    None:       (2e-5, 1.0),
-    1e-9:       (2e-5, 1.0),
-    1e-10:      (2e-5, 1.0),
-    "secluded": (2e-5, 1.0),
+    None:       (1e-3, 1.0),
+    1e-9:       (1e-3, 1.0),
+    1e-10:      (1e-3, 1.0),
+    "secluded": (1e-3, 1.0),
 }
 
-# Points on the lam axis per output.  The shared default is 8, which over
-# LAM_LIMS' 4.7 decades is a factor 4.69 per step.  That is too coarse for the
-# secluded outputs: run 59713507 found 2114 of 6249 crossings against the
-# earlier 2856 on a 2.3-decade axis of the same 8 points, losing 742 nodes that
-# sit right at the rv ~ 0.7 edge where Omega peaks near the target and
-# resolution decides.  The axis that found 2856 stepped by 2.13; 14 points over
-# the wider range step by 2.30, so this restores that resolution while keeping
-# the floor that supplies the 107 crossings below 5e-3.  (12 would step by 2.67
-# -- still coarser than what worked, so it would not recover all 742.)
+# Points on the lam axis per output.  14 over the 3 decades above is a factor
+# 1.70 per step -- finer than any axis this campaign has run (the best before
+# was 2.13), because the range no longer wastes decades where nothing crosses.
+# All outputs get the same treatment now: the old 8 for the joint eps was set
+# when their axis spanned 4.7 decades.  COUPLING_SWEEP_STOP means the extra
+# points cost little, since the sweep ends one past the crossing.
 # Changing an entry resets that output's file: load_state compares the axis.
 N_LAM = {
-    None:       8,
-    1e-9:       8,
-    1e-10:      8,
+    None:       14,
+    1e-9:       14,
+    1e-10:      14,
     "secluded": 14,
 }
 
