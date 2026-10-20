@@ -1,0 +1,142 @@
+# Higgs-portal extension campaign — off-shell WW*/ZZ* and mX = 100–130 GeV
+
+> **Status (2026-10-20).** Code for the off-shell WW*/ZZ* channels is committed on this
+> branch (`GCE/pythia_runner.py`, `GCE/spectrum.py`, `GCE/scripts/make_channel_spectra.py`).
+> Stage 1 is ready to run. Stage 2 needs its driver written first (spec below). Stage 3
+> runs on the local machine, **not** here — see "Why the fits stay local".
+
+The hP favoured region (south, free <sigma v>) reaches the mX = 100 GeV edge of the grid
+along the mY ~ mX diagonal: Delta chi2 profiled over mY is 5.76 at mX = 100 against a
+3-sigma (2-parameter) level of 11.83. Both the 2- and 3-sigma regions must be closed, so
+the grid is extended to mX = 130 GeV for the Higgs portal only. Above mY ~ 100 GeV the
+scalar decays to W W* / Z Z* (HDECAY: BR(WW*) 1.1% at 100, 5% at 110, 21% at 125, 50% at
+140), which the cache could not represent — those channels were skipped below 2 m_V with
+no renormalisation. They are now generated.
+
+## Quickstart (on the cluster, after pulling this branch)
+
+```bash
+source $HOME/cosmo_env/bin/activate
+cd /global/u1/g/gab97/secluded_DM
+
+# Stage 1 — the 28 WW files the main grid now needs (hP points with mY >= 90.379)
+# GATE: chanspec.sh writes to $PSCRATCH/channel_spectra unconditionally.  If that staged
+# copy was purged, the driver would regenerate all ~157k files.  This MUST print
+# "157874/157902 files present, 28 missing" (all WW, mX 91-100) before you submit:
+CHANNEL_SPECTRA_DIR=$PSCRATCH/channel_spectra python GCE/scripts/make_channel_spectra.py --check
+sbatch -N 1 -q regular -t 01:00:00 GCE/scripts/chanspec.sh      # one node, ~20 min of work
+# then copy the 28 back into the repo (chanspec_finish.sh does this, or rsync by hand),
+# re-run --check WITHOUT CHANNEL_SPECTRA_DIR (repo copy) until it says 0 missing,
+# commit GCE/channel_spectra/WW_*N400000_s12345.npz on this branch and push.
+#
+# If the $PSCRATCH copy is incomplete, run against the repo copy instead on an
+# interactive node (28 files is nothing for DVS):
+#   salloc -C cpu -q interactive -N 1 -t 01:00:00 -A m3166
+#   python GCE/scripts/make_channel_spectra.py --check        # must say 28 missing
+#   python GCE/scripts/make_channel_spectra.py -n 28
+
+# Stage 2 — the hP extension grid (driver not written yet; spec below)
+```
+
+Everything below is the why and the spec.
+
+## What is committed (no hand edits needed for Stage 1)
+
+- `pythia_runner.py`: `WIDTHS = {23: 2.4952, 24: 2.085}` and `M_OFFSHELL_MIN = 10.0`
+  (Pythia's own 23:mMin = 24:mMin). A channel whose first daughter has a width is a
+  V V* channel: `_inject_decay` draws both masses with `_offshell_masses` (exact
+  accept-reject from BW(m1^2) BW(m2^2) sqrt(lam)(lam + 12 x1 x2), the CP-even scalar's
+  matrix element) and injects the pair exactly like every other channel — same
+  isotropic decay, boost, shower scale, hadronisation; Pythia decays each V.
+  `min_mY('WW') = 90.379`, `min_mY('ZZ') = 101.188` (one on-shell V + 10 GeV); below
+  that HDECAY's WW*/ZZ* share is < 0.2% / 0.1% and stays skipped.
+- `spectrum.py`: only the comment on the `min_mY` skip in `cascade_spectrum`.
+- `make_channel_spectra.py`: unchanged logic (it already includes WW/ZZ in `CHANNELS`
+  and skips below `min_mY`); `--check` and a corrected comment.
+- Every other channel's random stream is untouched: bb, tautau, gg came out
+  bit-identical to the previous module at the same seed.
+
+## Validation done before committing (local, 2026-10-15 .. 20)
+
+- Sampler vs the exact distribution (per-row quadrature in t = atan((m^2-m0^2)/(m0 w))):
+  chi2/bin 0.45-1.52, max |pull| <= 3.2, W at mY = 91-170, Z at 102-130.
+- Above threshold (mY = 170): N_gamma per decay within 0.1% (at rest) / 0.6% (boosted)
+  of the old fixed-mass on-shell injection; the 2-2.5% <sigma v> shift at BR = 1 is the
+  W width that injection ignored.
+- Below threshold vs Pythia's own resonance route (inject h0 at mY, 25:onIfMatch = 24 -24):
+  W* mass medians agree to 0.1 GeV (22.9/23.0 at 110, 33.1/33.0 at 125, 45.9/45.8 at
+  140); N_gamma within 1%; hP-mix Delta chi2 between the two routes -0.02 / -0.11 / +0.49
+  at mY = 110 / 125 / 140, i.e. MC noise.
+- Effect of including WW* in the hP fit (vs the old silent drop), at mY = 110 / 125 / 140:
+  Delta chi2 +0.16 / +0.50 / +1.03, fitted <sigma v> lower by 4% / 18% / 46%
+  (the old drop inflated it by 1.04 / 1.22 / 1.84).
+- Cost: 1.2-1.4 ms/event for WW/ZZ, but ~2.9 ms/event just above the floor (W at 91-95,
+  Z at ~102), where the plain accept-reject keeps few pairs — a 400k file there is
+  ~19 min instead of ~9. Accepted deliberately: the public code is what generates the
+  public files (a faster, more complex envelope sampler existed and was dropped).
+
+## Stage 2 spec — the hP extension grid (driver to be written)
+
+Decided with the user:
+- **Range**: mX 100 -> 130 GeV, Higgs portal only; the shared 16384-point grid and its
+  cache are not touched (changing `MX_LIM` would move every node).
+- **Columns**: continue the main grid's log spacing, du = log10(100/15)/123 = 0.0066984
+  dex: mX = 10^(2 + k du), k = 1..17 -> 101.55 ... 129.98 GeV.
+- **Rows**: mY/mX from 0.6 to 1 (mY up to mX, NOT capped at 100), at the main grid's
+  density in log mY (its mX = 100 column: 193 points over log10(100/5), dv = 0.0067762
+  dex) -> 34 points per column, 578 points. Round both to 2 decimals like the main grid
+  (DECIMALS), since the cache filenames carry them.
+  Why 0.6: for mX >= 92 the 2- and 3-sigma regions sit at mY/mX >= 0.70, narrowing to
+  >= 0.82 at mX = 100.
+- **Channels**: the Higgs portal's photon channels only — bb, cc, tautau, gg, ss, mumu,
+  gamgam, WW, ZZ (WW at 272 of the points, ZZ at 153). Same N_EVENTS = 400_000,
+  SEED = 12345, N_BINS = 180, `default_ebins(mX)` as the main grid.
+- **Cost**: ~1 CPU-h per point (400k events at mY ~ 100: bb 6, cc 5, gg 8, tautau 10 min;
+  WW/ZZ 9-19 min) -> ~600 CPU-h, a few node-hours on Perlmutter via chanspec.sh-style
+  sharding (--worker/--nworkers).
+- **Open design choice — ask the user before writing it**: (a) add the extension to
+  `make_channel_spectra.py` as configuration constants, so one public driver builds main
+  grid + extension and stays resumable, or (b) a separate public driver. Either way it
+  must be public code in the repo's style: configuration constants, not CLI flags
+  (only -n, --worker/--nworkers, --check say how to run). No patched-up one-off scripts:
+  the GCE/ code will be released and must reproduce every file.
+- **Check before production**: `--check` count must equal the expected file count; run a
+  handful of points first and compare N_gamma per decay with the main grid's mX = 100
+  column (continuity across the seam).
+
+Expectation from a b bbar-only proxy along the diagonal (direct bb at m_DM = mX/2, which
+ignores WW*): 3-sigma closes near mX ~ 112; with WW* included the full hP mix is already
+at Delta chi2 ~ 16 at (mX, mY) = (115.5, 110). 130 GeV is the margin.
+
+## Stage 3 — downstream, on the LOCAL machine
+
+1. Copy the 28 Stage-1 WW files and the Stage-2 files from this branch into the local
+   `GCE/channel_spectra/` (new files; nothing local is overwritten).
+2. Re-run the hP free-<sigma v> fit on the main grid (`GCE/scripts/make_GCE_sv_grids.py`,
+   local only): the 28 points with mY >= 90.38 now include WW*.
+3. Fit the extension grid (needs a small extension of that script, same style).
+4. Thermal relic: `GCE/scripts/make_GCE_sv_thermal_relic_grids.py` (local only) already
+   has the 2026-10-20 coverage fix (RV_MAX 0.995, one coarse row below mY = 5,
+   <sigma v> = 0 at mY = mX) and needs a rerun (~2.5 h); its coarse grid stops at
+   mX = 100, so the hP relic over 100-130 needs the same extension.
+
+### Why the fits stay local
+This branch's `GCE/gce_data.py` / `GCE/likelihood.py` carry `d4e4419c99`'s
+`sigma_mod_scaling='paper'` hemisphere covariance (Sigma_mod x 0.45^2 in the south). The
+local tree that produced `GCE/output/sv_fits/` uses the rescaled-correlation prescription.
+A fit run here would not be comparable with the local main-grid fit. The spectra do not
+depend on the covariance, so Stages 1-2 are safe here. Do not change either file on this
+branch as part of this campaign; which prescription to use is the user's decision.
+
+## Reproducibility note
+The cache is reproducible statistically, not bit-for-bit: `make_channel_spectra.py` builds
+one `PythiaRunner(seed=12345)` per worker process and never reseeds between files, and
+`imap_unordered` makes the order vary. Per-file seeding from (mX, mY, channel, seed) would
+make each file exactly regenerable; it was discussed and deliberately NOT done now.
+
+## Related decisions
+- Contour levels: 2.30 / 6.18 / 11.83 (68.3 / 95.4 / 99.73% for 2 parameters). The fit
+  notebooks' `9.12` level looks like a typo for 9.21 (99%) — flagged to the user, not
+  changed.
+- `GCE/notebooks/GCE_fits.ipynb` is the user's combined-portal notebook; do not edit it
+  unasked.

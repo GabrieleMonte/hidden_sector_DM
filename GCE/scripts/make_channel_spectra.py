@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling scripts
 
 from GCE.pythia_runner import (                             
     CHANNEL_TO_PDG, PythiaRunner, channels_for_species, min_mY, run_spectrum,
+    spectrum_path,
 )
 from GCE.spectrum import default_ebins                      
 
@@ -96,10 +97,11 @@ def run_point(i: int) -> str:
             _RUNNER = PythiaRunner(seed=SEED)
         for ch in CHANNELS:
             if mY < min_mY(ch):
-                # Y is too light to decay this way, or -- for a heavy-flavour
-                # channel -- too light for Pythia to fragment the pair into
-                # real hadrons.  Either way the branching ratio is zero there,
-                # so the file would never be read.
+                # Y is too light to decay this way, too light for Pythia to
+                # fragment a heavy-flavour pair into real hadrons, or -- for
+                # V V* -- below one on-shell V plus M_OFFSHELL_MIN.
+                # cascade_spectrum skips the channel there too, so the file
+                # would never be read.
                 continue
             run_spectrum(_RUNNER, mX, mY, ch, N_EVENTS, ebins, OUT_DIR,
                          verbose=False)
@@ -122,6 +124,8 @@ ap.add_argument("--worker", type=int, default=0, metavar="W",
                 help="this rank's index, 0 <= W < --nworkers (default 0)")
 ap.add_argument("--nworkers", type=int, default=1, metavar="N",
                 help="number of cluster ranks sharing the grid (default 1)")
+ap.add_argument("--check", action="store_true",
+                help="report what is still missing and exit; starts no Pythia")
 args = ap.parse_args()
 if not 0 <= args.worker < args.nworkers:
     ap.error(f"--worker must satisfy 0 <= {args.worker} < {args.nworkers}")
@@ -133,6 +137,29 @@ todo = list(range(args.worker, GRID.shape[1], args.nworkers))
 # expensive points for the end -- exactly the ragged tail that decides the
 # makespan.  Handing the pool the heavy points first lets the cheap ones fill
 # in behind them.
+if args.check:
+    # Which (point, channel) files this rank's slice still owes.  Mirrors the
+    # `mY < min_mY(ch)` skip in run_point exactly, so "0 missing" means
+    # "nothing left to do", not "nothing left that I know how to name".
+    want = miss = 0
+    short_points = []
+    for i in todo:
+        mX, mY = (float(v) for v in GRID[:, i])
+        open_ch = [ch for ch in CHANNELS if mY >= min_mY(ch)]
+        gap = [ch for ch in open_ch
+               if not spectrum_path(mX, mY, ch, N_EVENTS, SEED, OUT_DIR).exists()]
+        want += len(open_ch)
+        miss += len(gap)
+        if gap:
+            short_points.append((mX, mY, gap))
+    print(f"rank {args.worker}/{args.nworkers}: {want - miss}/{want} files present, "
+          f"{miss} missing across {len(short_points)} of {len(todo)} points")
+    for mX, mY, gap in short_points[:10]:
+        print(f"  mX={mX:7.2f} mY={mY:7.2f}  missing: {' '.join(gap)}")
+    if len(short_points) > 10:
+        print(f"  ... and {len(short_points) - 10} more points")
+    sys.exit(0 if miss == 0 else 1)
+
 todo.sort(key=lambda i: -GRID[1, i])
 n = len(todo)
 OUT_DIR.mkdir(parents=True, exist_ok=True)

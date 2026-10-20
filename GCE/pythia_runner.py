@@ -93,18 +93,27 @@ CHANNEL_TO_PDG: dict[str, tuple[int, int]] = {
 # as it already does for MASSES.)
 HADRON_MASSES = {"bb": 5.27934}                 # B+-
 
+# Widths [GeV] of the daughters whose mass is drawn rather than fixed at MASSES'.
+# A scalar decays to W W* / Z Z* well below 2 m_V -- HDECAY's BR(WW*) is 5% at
+# m_phi = 110 and 21% at 125 -- where the pair cannot sit at its pole mass.
+WIDTHS = {23: 2.4952, 24: 2.085}               # Z, W+-
+M_OFFSHELL_MIN = 10.0     # lightest V* drawn, Pythia's own 23:mMin = 24:mMin
+
 
 def min_mY(channel: str) -> float:
     """Lowest mediator mass `channel` can be generated at.
 
-    The open-flavour threshold where the channel has one, otherwise just the
-    sum of the injected daughter masses.
+    The open-flavour threshold where the channel has one; one on-shell V plus
+    M_OFFSHELL_MIN for V V*; otherwise the sum of the injected daughter masses.
     """
     if channel not in CHANNEL_TO_PDG:
         raise KeyError(f"channel '{channel}' has no PDG mapping")
     mH = HADRON_MASSES.get(channel)
     if mH is not None:
         return 2.0 * mH
+    pdg = abs(CHANNEL_TO_PDG[channel][0])
+    if pdg in WIDTHS:
+        return MASSES[pdg] + M_OFFSHELL_MIN
     return sum(MASSES[abs(p)] for p in CHANNEL_TO_PDG[channel])
 
 
@@ -147,6 +156,26 @@ def channels_for_species(brs: dict, species: str) -> list[tuple[str, float]]:
 
 
 # ---- 2. the Pythia engine ------------------------------------------------
+
+def _offshell_masses(rng, m_Y: float, pdg: int):
+    """(m1, m2) for a scalar Y -> V V*, from BW(m1^2) BW(m2^2) sqrt(lam) (lam + 12 x1 x2),
+    x_i = m_i^2 / m_Y^2, lam = lam(1, x1, x2) -- the CP-even scalar's matrix element.
+
+    In t = atan((m^2 - m0^2) / (m0 w)) a Breit-Wigner is flat, so both t are drawn
+    uniformly and a pair is kept with probability sqrt(lam) (lam + 12 x1 x2) <= 1,
+    which is 0 once m1 + m2 >= m_Y.
+    """
+    m0, w = MASSES[pdg], WIDTHS[pdg]
+    t_lo, t_hi = (math.atan((m * m - m0 * m0) / (m0 * w))
+                  for m in (M_OFFSHELL_MIN, m_Y - M_OFFSHELL_MIN))
+    while True:
+        m = np.sqrt(m0 * m0 + m0 * w * np.tan(rng.uniform(t_lo, t_hi, size=(4096, 2))))
+        x1, x2 = (m[:, 0] / m_Y) ** 2, (m[:, 1] / m_Y) ** 2
+        lam = (1.0 - x1 - x2) ** 2 - 4.0 * x1 * x2
+        keep = rng.uniform(size=4096) < np.sqrt(np.clip(lam, 0.0, None)) * (lam + 12.0 * x1 * x2)
+        if keep.any():
+            return m[np.argmax(keep)]
+
 
 def _sample_decay(rng, m_Y: float, m1: float, m2: float, p_Y_lab: float):
     """Sample Y -> d1 d2 isotropically in Y rest frame, boost to lab (Y along +z)."""
@@ -218,7 +247,10 @@ class PythiaRunner:
 
     def _inject_decay(self, ev, pdg_pair, m_Y: float, p_Y: float):
         id1, id2 = int(pdg_pair[0]), int(pdg_pair[1])
-        m1, m2 = MASSES.get(abs(id1), 0.0), MASSES.get(abs(id2), 0.0)
+        if abs(id1) in WIDTHS:                      # V V*: both masses drawn
+            m1, m2 = _offshell_masses(self._rng, m_Y, abs(id1))
+        else:
+            m1, m2 = MASSES.get(abs(id1), 0.0), MASSES.get(abs(id2), 0.0)
         px1, py1, pz1, E1, px2, py2, pz2, E2 = _sample_decay(
             self._rng, m_Y, m1, m2, p_Y)
         c1, ac1, c2, ac2 = _colour_lines(id1, id2)
@@ -243,8 +275,8 @@ class PythiaRunner:
                 + (f" (open-flavour threshold 2 m_H = 2 x "
                    f"{HADRON_MASSES[channel]:g} GeV)"
                    if channel in HADRON_MASSES else "")
-                + "; Pythia cannot hadronise it there. The branching ratio is "
-                  "suppressed to zero over the same range, so nothing should "
+                + "; the branching ratio is zero or negligible below it and "
+                  "cascade_spectrum skips the channel there, so nothing should "
                   "be asking for this spectrum.")
         ebins = np.asarray(ebins, dtype=float)
         nb = len(ebins) - 1

@@ -78,10 +78,11 @@ def cascade_spectrum(model, ebins, n_events: int = 400_000,
     ebins = np.asarray(ebins, dtype=float)
     acc = np.zeros(len(ebins) - 1)
     for ch, br in channels_for_species(model.branching_ratios_to_SM(), species):
-        # Mediator too light to decay this way -- HDECAY leaves a ~1e-10 off-shell
-        # WW*/ZZ* BR at all masses, and the cache (rightly) never holds these.
-        # `min_mY` also covers the open-flavour thresholds, so this agrees with
-        # what the cache builder was willing to generate.
+        # Mediator too light to decay this way.  For WW/ZZ that is below one
+        # on-shell V plus M_OFFSHELL_MIN, where HDECAY's WW*/ZZ* share is < 0.2%
+        # / 0.1% and is dropped without renormalising.  `min_mY` also covers the
+        # open-flavour thresholds, so this agrees with what the cache builder
+        # was willing to generate.
         if ch in CHANNEL_TO_PDG and model.mY < min_mY(ch):
             continue
         if runner is None:
