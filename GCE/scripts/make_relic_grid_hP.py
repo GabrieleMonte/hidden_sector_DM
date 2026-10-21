@@ -81,8 +81,17 @@ from hidden_sector_DM.HiddenSectorDM import HiggsPortal           # noqa: E402
 # equilibrium-shelf artifact and is now actively harmful: nothing crosses down
 # there, and since 1d99f58edb those decades do genuine Phase-2 integration, so
 # a single solve can exceed 300 s.
+# 1e-8 and 1e-7 surveyed 2026-10-20 over the same 30 nodes, on a probe axis
+# widened to [0.01, 3.98] in case the crossing ran past the ceiling.  It does
+# not: 30/30 crossings in [0.03356, 0.3055] at 1e-8 and [0.0435, 0.1641] at
+# 1e-7.  The maximum saturates and then falls with eps (0.3186 at 1e-9,
+# 0.3055 at 1e-8, 0.1641 at 1e-7) because by 1e-7 the phi decays at x ~ 18,
+# at or before freeze-out, so there is no entropy dilution left for the
+# coupling to compensate.  The same axis therefore serves every eps.
 LAM_LIMS = {
     None:       (1e-3, 1.0),
+    1e-7:       (1e-3, 1.0),
+    1e-8:       (1e-3, 1.0),
     1e-9:       (1e-3, 1.0),
     1e-10:      (1e-3, 1.0),
     "secluded": (1e-3, 1.0),
@@ -97,6 +106,8 @@ LAM_LIMS = {
 # Changing an entry resets that output's file: load_state compares the axis.
 N_LAM = {
     None:       14,
+    1e-7:       14,
+    1e-8:       14,
     1e-9:       14,
     1e-10:      14,
     "secluded": 14,
@@ -239,9 +250,11 @@ def main():
     ap.add_argument("--xi-ini", type=float, default=1.0,
                     help="T_D/T_SM at Tinf (default 1.0)")
     ap.add_argument("--only", default=None,
-                    choices=["secluded", "1e-9", "1e-10"],
-                    help="run just one output.  The three write different "
-                         "files, so they can be separate concurrent slices")
+                    choices=["secluded", "1e-7", "1e-8", "1e-9", "1e-10"],
+                    help="run just one output.  Each writes a different "
+                         "file, so they can be separate concurrent slices.  "
+                         "'secluded' is EPS_SECLUDED, which for this portal "
+                         "is 1e-9 and 1e-10, not the shared three")
     ap.add_argument("--no-phase3", action="store_true",
                     help="legacy path: clear PHASE3_KW")
     ap.add_argument("--nshards", type=int, default=1,

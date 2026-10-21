@@ -37,12 +37,22 @@ import make_relic_grid_hP as hp                                   # noqa: E402
 
 # ---- configuration ---------------------------------------------------
 
-# Probe axis: 1e-4 is already 1.7 decades below the smallest crossing seen by
-# hand (0.0055), and stopping there bounds the cost -- below ~1e-3 the fixed
-# solver does genuine Phase-2 integration and a single solve can exceed 300 s.
-LAM_PROBE = np.logspace(-4.0, 0.0, 13)
+# Probe axis.  Re-aimed 2026-10-20 for eps = 1e-8 and 1e-7, which sit ABOVE
+# every eps solved so far.  The crossing climbs steadily with eps --
+# 0.0043-0.019 at 1e-12, 0.0089-0.047 at 1e-11, 0.016-0.136 at 1e-10,
+# 0.029-0.319 at 1e-9, so roughly lam ~ eps^0.4 at the top end -- which
+# extrapolates to ~0.8 at 1e-8 and ~2 at 1e-7.  Both are at or over the
+# production axis ceiling of 1.0, so the probe has to look past it; 3.98 is
+# just inside perturbativity (sqrt(4 pi) = 3.54 is the usual marker, so
+# anything found above ~3.5 is a result about the model, not the axis).
+# The old axis was logspace(-4, 0, 13), aimed at 1e-9 and 1e-10.
+LAM_PROBE = np.logspace(-2.0, 0.6, 14)
 PROBE_TIMEOUT = 300      # s per solve; a healthy solve here takes 4-9 s
-EPS_JOINT = (1e-9, 1e-10)
+EPS_JOINT = (1e-8, 1e-7)
+
+# The secluded column is skipped: base.EPS_SECLUDED is (1e-9, 1e-10) for this
+# portal now and both are solved, so sweeping it again would only cost time.
+INCLUDE_SECLUDED = False
 
 N_MX, N_RV = 6, 5        # survey mesh over the grid's own domain
 MX_LIMS = (16.0, 95.0)
@@ -82,7 +92,8 @@ def main():
     base.COUPLING_SWEEP_STOP = True          # stop one point past the crossing
 
     nodes = survey_nodes()
-    kinds = ["secluded"] + [f"{e:g}" for e in EPS_JOINT]
+    kinds = (["secluded"] if INCLUDE_SECLUDED else []) \
+        + [f"{e:g}" for e in EPS_JOINT]
     tasks = [(k, mX, rv * mX, kind)
              for k, (mX, rv) in enumerate(nodes) for kind in kinds]
 
@@ -103,10 +114,12 @@ def main():
                 omega_joint[k, :, EPS_JOINT.index(float(kind))] = omega[:, 0]
 
     # ---- crossings -------------------------------------------------
-    labels = [f"secluded eps={e:g}" for e in base.EPS_SECLUDED]
+    labels, columns = [], []
+    if INCLUDE_SECLUDED:
+        labels += [f"secluded eps={e:g}" for e in base.EPS_SECLUDED]
+        columns += [omega_sec[:, :, e] for e in range(n_sec)]
     labels += [f"joint    eps={e:g}" for e in EPS_JOINT]
-    columns = [omega_sec[:, :, e] for e in range(n_sec)] \
-        + [omega_joint[:, :, e] for e in range(len(EPS_JOINT))]
+    columns += [omega_joint[:, :, e] for e in range(len(EPS_JOINT))]
 
     print(f"\n{'output':>22} {'found':>7} {'min lam':>11} {'max lam':>11}")
     allx = []
