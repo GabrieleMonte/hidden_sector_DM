@@ -102,6 +102,32 @@ N_LAM = {
     "secluded": 14,
 }
 
+# The eps the secluded route serves, overriding base.EPS_SECLUDED for this
+# portal only -- the vector portals keep the shared (1e-11, 5e-12, 1e-12).
+#
+# Those three are dropped here because Gamma_phi ~ eps^2 puts the phi decay at
+# tau = 2.8-37700 s for all of them, i.e. 100% of grid nodes decaying at or
+# after BBN onset, where the relic is not the binding constraint anyway.
+# 1e-9 and 1e-10 decay at 2.8e-4 - 3.8e-2 s and 2.8e-2 - 3.8 s.
+#
+# They are solved by the SECLUDED route although they are joint eps, because
+# at this coupling the sectors are already decoupled and the joint route only
+# costs more.  Measured 2026-10-20 at eps=1e-9, re-solving the delivered joint
+# grid's own lam with solve_boltzmann_chempot_3phase: Omega_secluded/0.12 has
+# median 0.9972 over 16 nodes, inside 1% for 12 of them, and Omega ~ lam^-4
+# makes that 0.07% on lam.  Agreement degrades at low rv -- 0.89 at rv=0.112,
+# and a wider spread (0.87-1.18) over a set that oversampled rv < 0.25 -- so
+# the eps=1e-9 column of this run is kept as a 2083-node check against the
+# joint grid rather than thrown away.
+#
+# The cost is not marginal.  At eps=1e-10 the joint route spends ~750 s per
+# solve inside Phase 3, which must integrate the injection era; 9517 solves
+# exceeded the 600 s cap in the 2026-10-20 rebuild and it reached 167 of 2083
+# nodes in two hours.  The tolerance cannot be bought back: phase3_kw at 1e-4
+# is 4x faster and returns Omega = 4.05e-06 instead of 0.137 while still
+# reporting converged=True.  The secluded route takes 4-5 s.
+EPS_SECLUDED = (1e-9, 1e-10)
+
 GX_MAJORANA = 2          # Majorana fermion DM: 2 spin states, no antiparticle
 GY_REAL_SCALAR = 1       # real scalar mediator: one degree of freedom
 
@@ -143,6 +169,7 @@ def _configure(xi_ini):
     base.XI_INI = float(xi_ini)
     base._make_model = _make_model
     base.COUPLING_LIMS = LAM_LIMS
+    base.EPS_SECLUDED = EPS_SECLUDED
     base._set_coupling = _set_coupling
     base.PORTAL = TAG_STEM
     base.PORTAL_KW = {}

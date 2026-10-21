@@ -8,14 +8,14 @@
 #SBATCH -n 1
 #SBATCH -c 96
 #SBATCH -q shared
-#SBATCH -t 01:15:00
+#SBATCH -t 02:00:00
 #
 # Attribute the eps=1e-10 joint cost before resubmitting the rebuild.
 #
 #   sbatch GCE/scripts/joint_cost_probe_hP.sbatch
 #
-# 4 nodes x 2 eps x 6 lam x 2 rtol = 96 half-split solves, one per core, each
-# capped at 1800 s.  Shared QOS, 96 of 256 cores: about 0.5 node-hours.
+# 4 nodes x 2 eps x 4 lam x 3 rtol = 96 half-split solves, one per core, each
+# capped at 1800 s per half.  Shared QOS, 96 of 256 cores: ~0.8 node-hours.
 
 module load python
 source "$HOME/cosmo_env/bin/activate"
