@@ -99,8 +99,10 @@ ONLY_RV_COLUMNS = None                   # None = queue every rv column
 STATUS_UNRECORDED  = -1                  # written before status was recorded, or
                                          # never attempted (incl. off-grid nodes)
 STATUS_OK          = 0                   # a crossing was found
-STATUS_SOLVE_FAILED = 1                  # too few finite Omega samples to
-                                         # interpolate: the solves failed
+STATUS_SOLVE_FAILED = 1                  # the solves failed where it mattered: too few
+                                         # finite Omega samples to interpolate, or the
+                                         # bracketing pair is not adjacent on the axis
+                                         # because the samples between them failed
 STATUS_NO_SOLUTION = 2                   # Omega never reaches the target on the
                                          # sampled axis; no coupling solves this
                                          # node.  Physics, not a shortfall.
@@ -143,6 +145,20 @@ XMAX_JOINT = 5e3                         # converged to <0.3% vs 1.5e4 at both r
 RETRY_RTOL    = 1e-6                     # one retry at this rtol_value after a timeout
 REQUIRE_CONVERGED = True                 # discard a solve whose own 'converged' flag is
                                          # False; see _NotConverged
+ACCEPT_UNCONVERGED_PHASE2 = True         # ...except a joint run that completed Phase 2 and
+                                         # stopped at xmax.  It reports converged=False
+                                         # only because no Phase-3 handoff fired: dlnS/dN
+                                         # never reached Sdot_switch_thresh, which is the
+                                         # weak-injection regime where Phase 2's
+                                         # conserved-S form is still valid and bg_ICs are
+                                         # good.  omega_h2_joint's phase_final-not-in-
+                                         # (1.5S, 3) branch is written for exactly this.
+                                         # Measured 2026-10-22 at eps=1e-7 on 4 such nodes
+                                         # against a forced Phase 3 (Sdot_switch_thresh
+                                         # 0.005): Omega agrees to 2.3-2.6%, and a control
+                                         # that reaches Phase 3 unaided agrees to 0.14%.
+                                         # Omega ~ coupling^-4, so that is 0.6% on the
+                                         # coupling, well inside the axis step of 1.70.
 SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2,
                  rtol_value=1e-6)        # 1e-8 exceeds any timeout at rv=0.95 (>45 min);
                                          # 1e-6 solves those in ~1-6 min with identical
@@ -345,7 +361,8 @@ def omega_h2_joint(mX, mY, alphaX, eps):
         _log_nan(mX, mY, alphaX, eps, e)
         return np.nan
 
-    if REQUIRE_CONVERGED and not joint["converged"]:
+    if (REQUIRE_CONVERGED and not joint["converged"]
+            and not (ACCEPT_UNCONVERGED_PHASE2 and joint["phase_final"] == 2)):
         _log_nan(mX, mY, alphaX, eps, _NotConverged("joint"))
         return np.nan
 
@@ -417,6 +434,21 @@ def _crossing(omega):
     c0 = int(straddle[0])
 
     lo, k = int(idx[c0]), int(idx[c0 + 1])  # the bracketing pair itself
+
+    # ...and it has to be adjacent ON THE AXIS, not merely adjacent among the
+    # samples that happen to be finite.  Both reasons a sample is NaN look the
+    # same here, and they are not the same thing: _sweep SKIPS the low end
+    # deliberately, always below the crossing, where bridging is harmless; a
+    # FAILED solve can sit anywhere, including between the bracketing pair,
+    # and then the crossing is read across a hole whose shape is unknown.
+    # Measured by replaying each run's own NaN log against its crossings:
+    # 56 of 2083 at eps=1e-9, 0 of 2083 at 1e-8, 384 of 1968 at 1e-7 -- and at
+    # 1e-7 the bridged values came out ~2x below the same nodes solved with
+    # the holes filled, with nothing in the file to show for it.  A log-log
+    # read across one step of a near power law is accurate; across four steps
+    # and four decades of Omega it is a guess.  Report the gap instead.
+    if k != lo + 1:
+        return np.nan, STATUS_SOLVE_FAILED
 
     win = idx[max(c0 - 1, 0):min(c0 + 3, idx.size)]
     om, ax = omega[win], COUPLING[win]
