@@ -145,20 +145,39 @@ XMAX_JOINT = 5e3                         # converged to <0.3% vs 1.5e4 at both r
 RETRY_RTOL    = 1e-6                     # one retry at this rtol_value after a timeout
 REQUIRE_CONVERGED = True                 # discard a solve whose own 'converged' flag is
                                          # False; see _NotConverged
-ACCEPT_UNCONVERGED_PHASE2 = True         # ...except a joint run that completed Phase 2 and
-                                         # stopped at xmax.  It reports converged=False
-                                         # only because no Phase-3 handoff fired: dlnS/dN
-                                         # never reached Sdot_switch_thresh, which is the
-                                         # weak-injection regime where Phase 2's
-                                         # conserved-S form is still valid and bg_ICs are
-                                         # good.  omega_h2_joint's phase_final-not-in-
-                                         # (1.5S, 3) branch is written for exactly this.
-                                         # Measured 2026-10-22 at eps=1e-7 on 4 such nodes
-                                         # against a forced Phase 3 (Sdot_switch_thresh
-                                         # 0.005): Omega agrees to 2.3-2.6%, and a control
-                                         # that reaches Phase 3 unaided agrees to 0.14%.
-                                         # Omega ~ coupling^-4, so that is 0.6% on the
-                                         # coupling, well inside the axis step of 1.70.
+ACCEPT_UNCONVERGED_PHASES = (2, 3)       # ...except a joint run that got this far.
+                                         # solve_boltzmann_joint reports converged=False
+                                         # for three unrelated outcomes and only one of
+                                         # them is a failure:
+                                         #
+                                         #   phase 1 / 1.5  the phase-entry artifact --
+                                         #     never integrated, muX pinned to 0.  Fixed
+                                         #     at source in 1d99f58edb; still rejected.
+                                         #   phase 2  completed Phase 2 and stopped at
+                                         #     xmax because dlnS/dN never reached
+                                         #     Sdot_switch_thresh.  That is the weak-
+                                         #     injection regime where the conserved-S
+                                         #     form is still valid and bg_ICs are good;
+                                         #     omega_h2_joint's else branch finishes it.
+                                         #     Measured 2026-10-22 at eps=1e-7 on 4 nodes
+                                         #     against a forced Phase 3: Omega to 2.3-2.6%
+                                         #     (0.6% on the coupling), control 0.14%.
+                                         #   phase 3  Phase 3 ran and produced YX_relic,
+                                         #     then exited without setting the flag.
+                                         #     Measured at the 4 off-edge eps=1e-7 nodes
+                                         #     that survived the top-up, each flanked on
+                                         #     the axis by two CONVERGED samples: the
+                                         #     rejected Omega lands on the power law its
+                                         #     neighbours define (successive ratios
+                                         #     7.04/7.26, 7.38/7.50, 6.65/6.57, 6.60/6.45
+                                         #     against the 1.701^4 = 8.4 that Omega ~
+                                         #     coupling^-4 gives per step), and the
+                                         #     Phase-3-to-solve_background ratio is
+                                         #     0.87-0.95 on them against 0.84-1.14 on the
+                                         #     converged neighbours.  The flag carries no
+                                         #     information about correctness here.  They
+                                         #     also finish in 6 s, so there is no cost
+                                         #     pathology either.
 SOLVER_KW = dict(cannibal_switch_full=1, convergence_threshold=1e-2,
                  rtol_value=1e-6)        # 1e-8 exceeds any timeout at rv=0.95 (>45 min);
                                          # 1e-6 solves those in ~1-6 min with identical
@@ -178,6 +197,9 @@ CHECKPOINT_EVERY = 1                     # completed nodes between saves; the st
                                          # eps=1e-9/1e-10 nodes cost ~8 h each, so 8
                                          # between saves leaves a shard writing nothing
                                          # for ~64 h and losing it all at the wall
+RETRY_STATUSES = ()                      # status codes to re-queue from a stored grid
+                                         # before solving; see _requeue.  Empty means
+                                         # resume only the nodes never attempted.
 SEED_FROM_COARSE = True                  # reuse a coarser run's finished nodes
 BACKUP_PREVIOUS  = False                 # history lives on cluster-relic-vP commits
 SEC_PER_NODE = 3000.0                    # converged mode, rough; low-rv nodes are ~5x faster
@@ -362,7 +384,7 @@ def omega_h2_joint(mX, mY, alphaX, eps):
         return np.nan
 
     if (REQUIRE_CONVERGED and not joint["converged"]
-            and not (ACCEPT_UNCONVERGED_PHASE2 and joint["phase_final"] == 2)):
+            and joint["phase_final"] not in ACCEPT_UNCONVERGED_PHASES):
         _log_nan(mX, mY, alphaX, eps, _NotConverged("joint"))
         return np.nan
 
@@ -641,6 +663,24 @@ def _save(path, eps, coupling_relic, sigmav, done, status=None):
 
 # ---- grid runs ----------------------------------------------
 
+def _requeue(done, status, codes):
+    """Mark nodes carrying any of `codes` not-done, so _pending returns them.
+
+    A top-up for nodes whose solves failed for a reason the next run changes
+    -- a longer SOLVE_TIMEOUT, say.  Nodes that are off-grid, or that already
+    carry a crossing, are never re-queued: `done` is only ever cleared where
+    `status` says the node has no usable answer.  Returns how many.
+    """
+    if not codes:
+        return 0
+    hit = np.isin(status, list(codes))
+    if hit.ndim > 2:                     # secluded: eps on the leading axis,
+        hit = hit.any(axis=0)            # one `done` entry per (i, j)
+    hit &= ~off_grid
+    done[hit] = False
+    return int(hit.sum())
+
+
 def _pending(done):
     """(i, j, mX, mY) for every node still to solve.
 
@@ -678,6 +718,10 @@ def run_secluded(ncores):
     eps = np.array(EPS_SECLUDED)
     _set_coupling("secluded")
     coupling_relic, sigmav, status, done = load_state(path, (len(eps), N_MX, N_RV), eps)
+    n_requeued = _requeue(done, status, RETRY_STATUSES)
+    if n_requeued:
+        print(f"  re-queued {n_requeued} node(s) with status "
+              f"{[STATUS_NAMES[c] for c in RETRY_STATUSES]}")
 
     def on_result(res):
         i, j, a, sv, st = res
@@ -697,6 +741,10 @@ def run_joint(eps, ncores):
     path = OUT_DIR / f"relic_grid_{TAG}_eps{eps:.0e}.npz"
     _set_coupling(eps)
     coupling_relic, sigmav, status, done = load_state(path, (N_MX, N_RV), eps)
+    n_requeued = _requeue(done, status, RETRY_STATUSES)
+    if n_requeued:
+        print(f"  re-queued {n_requeued} node(s) with status "
+              f"{[STATUS_NAMES[c] for c in RETRY_STATUSES]}")
 
     def on_result(res):
         i, j, a, sv, st = res
@@ -722,8 +770,9 @@ def dry_run():
                            np.array(EPS_SECLUDED), (len(EPS_SECLUDED), N_MX, N_RV)))
     for path, eps, shape in outputs:
         _set_coupling(eps if np.isscalar(eps) else "secluded")
-        coupling_relic, sigmav, _status, done = load_state(path, shape, eps, backup=False)
-        left = len(_pending(done))
+        coupling_relic, sigmav, status, done = load_state(path, shape, eps, backup=False)
+        _requeue(done, status, RETRY_STATUSES)   # or the estimate understates
+        left = len(_pending(done))               # what the real run would solve
         todo += left
         print(f"  {path.name}: {left} of {N_VALID} nodes still to solve"
               + ("" if ONLY_RV_COLUMNS is None

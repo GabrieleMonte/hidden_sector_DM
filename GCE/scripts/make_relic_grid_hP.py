@@ -266,6 +266,14 @@ def main():
                          "and exit; needs --nshards and --only")
     ap.add_argument("-n", "--ncores", type=int, default=base.NCORES,
                     help=f"worker processes (default {base.NCORES})")
+    # Run control, not configuration: like -n they say how to run, not what
+    # to compute.  --retry-failed re-solves nodes a previous run could not
+    # finish; --solve-timeout is what makes that worth doing.
+    ap.add_argument("--retry-failed", action="store_true",
+                    help="also re-solve stored nodes whose status is "
+                         "solve_failed (pair with --solve-timeout)")
+    ap.add_argument("--solve-timeout", type=int, default=None, metavar="S",
+                    help=f"seconds per solve (default {base.SOLVE_TIMEOUT})")
     ap.add_argument("--dry-run", action="store_true",
                     help="report the grid, what is reusable and the ETA, then exit")
     args = ap.parse_args()
@@ -279,6 +287,11 @@ def main():
                  "separate files and must not share one run")
 
     _configure(args.xi_ini)
+
+    if args.retry_failed:
+        base.RETRY_STATUSES = (base.STATUS_SOLVE_FAILED,)
+    if args.solve_timeout is not None:
+        base.SOLVE_TIMEOUT = args.solve_timeout
 
     if args.no_phase3:
         base.PHASE3_KW = {}

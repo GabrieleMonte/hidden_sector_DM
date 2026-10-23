@@ -17,6 +17,13 @@
 #   sbatch -J hP-e08 --export=ALL,SLICE=1e-8 GCE/scripts/relic_hP_shared.sbatch
 #   sbatch -J hP-e07 --export=ALL,SLICE=1e-7 GCE/scripts/relic_hP_shared.sbatch
 #
+# WORKERS and EXTRA tune one run without a second submit file.  A top-up of
+# the nodes a previous run could not finish, for instance:
+#
+#   sbatch -J hP-e07-topup -c 16 --export=ALL,SLICE=1e-7,WORKERS=10,\
+#          EXTRA='--retry-failed --solve-timeout 3600' \
+#          GCE/scripts/relic_hP_shared.sbatch
+#
 # Use this, not relic_hP_slice.sbatch, for an output whose nodes are cheap.
 # Measured 2026-10-20 at eps=1e-8 over 24 grid nodes on the production axis:
 # median 87.4 s, mean 124.8 s, max 1043.8 s at rv=0.950, so the whole grid is
@@ -41,4 +48,6 @@ cd /global/u1/g/gab97/secluded_DM
 
 : "${SLICE:?set SLICE=1e-7|1e-8|1e-9|1e-10|secluded via --export}"
 
-python GCE/scripts/make_relic_grid_hP.py --only "$SLICE" -n 128
+# EXTRA is deliberately unquoted: it carries several flags or none.
+python GCE/scripts/make_relic_grid_hP.py --only "$SLICE" \
+       -n "${WORKERS:-128}" ${EXTRA:-}
