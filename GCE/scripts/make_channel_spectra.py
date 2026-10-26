@@ -15,6 +15,10 @@ including channels a given portal never opens.
 One task is one (mX, mY), writing one .npz per open channel into `OUT_DIR`.
 Existing files are loaded rather than regenerated, so a job killed at the wall
 clock is simply relaunched.
+
+Above mX = 100 GeV the grid carries a Higgs-portal extension (`extension_grid`)
+and the paragraph above stops holding: there, only that portal's channels are
+generated.  See the comment on EXT_CHANNELS.
 """
 
 import argparse
@@ -70,7 +74,50 @@ def triangle_grid(n_points: int = N_POINTS, n_cols: int = N_COLS,
     return np.round(np.vstack([mX, mY]), decimals)
 
 
-GRID = triangle_grid()          # (2, 16384) masses in GeV
+# ---- the Higgs-portal extension, mX = 100-130 GeV ------------------------
+# The hP favoured region reaches the mX = 100 GeV edge of the main grid along
+# the mY ~ mX diagonal with its 2- and 3-sigma contours still open, so the
+# grid is continued to 130 GeV for that portal alone.  The main grid's own
+# limits are untouched: moving MX_LIM would move all 16384 of its points and
+# invalidate the cache behind them.
+#
+# Unlike the main grid, this block is PORTAL-SPECIFIC, which is the one place
+# this module knows about a portal.  A vector- or baryon-portal extension into
+# the same range would have to generate its own channels rather than find them
+# already cached.
+EXT_N_COLS = 17                 # mX = 10^(2 + k du), k = 1 .. 17 -> 101.55-129.98
+EXT_RV_LIM = (0.6, 1.0)         # mY / mX; mY runs up to mX, NOT capped at 100
+EXT_N_RV = 34                   # rows per column, at the main grid's log-mY density
+# phi's photon channels over the extension's 60.93 <= mY <= 129.98, i.e.
+# channels_for_species(phi_branching_ratios(mY), SPECIES) unioned over it.
+# Named here rather than imported so this module keeps no portal dependency.
+# The `mY < min_mY(ch)` skip in run_point still gates each one, which opens
+# WW at 272 of the 578 points and ZZ at 153.
+EXT_CHANNELS = ["bb", "cc", "tautau", "gg", "ss", "mumu", "gamgam", "WW", "ZZ"]
+
+
+def extension_grid(n_cols: int = EXT_N_COLS, rv_lim=EXT_RV_LIM,
+                   n_rv: int = EXT_N_RV, mx_lim=MX_LIM,
+                   n_main_cols: int = N_COLS, decimals: int = DECIMALS):
+    """The Higgs-portal extension as a (2, `n_cols` * `n_rv`) array of (mX, mY).
+
+    Columns continue the main grid's log-mX step du past its upper limit, so
+    the seam has neither a gap nor a repeated column.  Rows are evenly spaced
+    in log mY between `rv_lim` * mX and mX, at the main grid's log-mY density
+    (its mX = 100 column: 193 points over log10(100/5), dv = 0.0067762 dex;
+    34 points over log10(1/0.6) gives 0.0067227).
+    """
+    du = np.diff(np.log10(mx_lim))[0] / (n_main_cols - 1)
+    mX = 10.0 ** (np.log10(mx_lim[1]) + du * np.arange(1, n_cols + 1))
+    rv = 10.0 ** np.linspace(*np.log10(rv_lim), n_rv)       # mY / mX per row
+    return np.round(np.vstack([np.repeat(mX, n_rv),
+                               (mX[:, None] * rv[None, :]).ravel()]), decimals)
+
+
+MAIN_GRID = triangle_grid()     # (2, 16384) masses in GeV
+EXT_GRID = extension_grid()     # (2, 578), Higgs portal only
+GRID = np.hstack([MAIN_GRID, EXT_GRID])
+N_MAIN = MAIN_GRID.shape[1]     # points before the seam, so `channels_at` can find it
 N_EVENTS = 400_000
 SEED = 12345
 SPECIES = "gamma"               # picks the channels; the .npz holds all targets
@@ -86,6 +133,12 @@ OUT_DIR = Path(os.environ.get("CHANNEL_SPECTRA_DIR",
 CHANNELS = [ch for ch, _br in channels_for_species({c: 1.0 for c in CHANNEL_TO_PDG}, SPECIES)]
 _RUNNER = None                  # one Pythia per worker process, never pickled
 
+
+def channels_at(i: int):
+    """The channels grid point `i` owes: every one the cache carries below the
+    seam at mX = 100, the Higgs portal's alone above it."""
+    return CHANNELS if i < N_MAIN else EXT_CHANNELS
+
 def run_point(i: int) -> str:
     """Run every open channel of grid point `i`.  Returns '' on success."""
     global _RUNNER
@@ -95,7 +148,7 @@ def run_point(i: int) -> str:
     try:
         if _RUNNER is None:                 # 128 of these start at once
             _RUNNER = PythiaRunner(seed=SEED)
-        for ch in CHANNELS:
+        for ch in channels_at(i):
             if mY < min_mY(ch):
                 # Y is too light to decay this way, too light for Pythia to
                 # fragment a heavy-flavour pair into real hadrons, or -- for
@@ -145,7 +198,7 @@ if args.check:
     short_points = []
     for i in todo:
         mX, mY = (float(v) for v in GRID[:, i])
-        open_ch = [ch for ch in CHANNELS if mY >= min_mY(ch)]
+        open_ch = [ch for ch in channels_at(i) if mY >= min_mY(ch)]
         gap = [ch for ch in open_ch
                if not spectrum_path(mX, mY, ch, N_EVENTS, SEED, OUT_DIR).exists()]
         want += len(open_ch)
@@ -163,7 +216,8 @@ if args.check:
 todo.sort(key=lambda i: -GRID[1, i])
 n = len(todo)
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-print(f"rank {args.worker}/{args.nworkers}: {n} of {GRID.shape[1]} points, "
+print(f"rank {args.worker}/{args.nworkers}: {n} of {GRID.shape[1]} points "
+      f"({N_MAIN} main + {GRID.shape[1] - N_MAIN} hP extension), "
       f"<={len(CHANNELS)} channels each, {N_EVENTS} events, "
       f"{args.ncores} cores -> {OUT_DIR}", flush=True)
 t0 = time.time()
