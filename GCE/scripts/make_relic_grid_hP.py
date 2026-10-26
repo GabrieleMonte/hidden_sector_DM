@@ -181,6 +181,11 @@ def _configure(xi_ini):
     base._make_model = _make_model
     base.COUPLING_LIMS = LAM_LIMS
     base.EPS_SECLUDED = EPS_SECLUDED
+    # Every joint sample must end in Phase 3 or SM-locked; see PHASE3_REQUIRE.
+    # The Higgs portal freezes out right at the Phase-3 handoff at eps=1e-7, so
+    # without this neighbouring nodes take different routes and the contour
+    # wobbles.  The vector portals leave it False.
+    base.PHASE3_REQUIRE = True
     base._set_coupling = _set_coupling
     base.PORTAL = TAG_STEM
     base.PORTAL_KW = {}

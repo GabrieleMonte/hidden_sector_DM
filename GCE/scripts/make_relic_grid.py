@@ -192,6 +192,35 @@ PHASE3_KW = dict(rho_switch_thresh=0.3,  # hand the joint solve to Phase 3 (the
                                          # probe P2 measured 1.00000 at x15.3
                                          # speedup).  --no-phase3 clears this.
 
+PHASE3_REQUIRE = False                   # True: a joint solve must end in Phase 3 (or
+                                         # the SM-locked 1.5S exit).  One that would take
+                                         # the legacy solve_background step is re-solved
+                                         # with the Sdot trigger lowered through
+                                         # PHASE3_RETRY_SDOT; if none engages the legacy
+                                         # value is kept and logged ("LEGACY coupling").
+                                         # False keeps the vector/baryon/B-L outputs on
+                                         # the exact path that built them.  The Higgs
+                                         # portal sets it True (make_relic_grid_hP.py):
+                                         # at eps=1e-7 freeze-out sits right at the
+                                         # Phase-3 handoff, so which route a sample takes
+                                         # is close to a coin flip between neighbouring
+                                         # coupling or rv, and the two routes disagree.
+                                         # Audited 2026-10-26 over 25 nodes per eps
+                                         # (phase3_path_audit_hP.py): at eps=1e-7, 24 of
+                                         # 181 solved samples change route, 7 of 25 nodes
+                                         # have one, but only 2 move the crossing by >1%
+                                         # and 1 by >5% -- a sample matters only when it
+                                         # is one of the two the crossing is read from.
+                                         # Worst 5.74% at mX=80.994 rv=0.727, the node
+                                         # the 2026-10-26 report names.  At eps=1e-8:
+                                         # 4 of 168 samples, worst 2.74%.  The median is
+                                         # 1.0000 at both, so this wobbles a contour
+                                         # node-to-node rather than biasing it.
+PHASE3_RETRY_SDOT = (1e-4, 1e-5)         # retry ladder for PHASE3_REQUIRE.  NOT lower:
+                                         # at 1e-7 the joint solve can hand off at a
+                                         # phase entry without the final-state check
+                                         # passing, i.e. an early legacy handoff.
+
 NCORES = 4                               # default worker count; -n overrides
 CHECKPOINT_EVERY = 1                     # completed nodes between saves; the stiff
                                          # eps=1e-9/1e-10 nodes cost ~8 h each, so 8
@@ -372,29 +401,49 @@ def omega_h2_secluded(mX, mY, alphaX):
 
 def omega_h2_joint(mX, mY, alphaX, eps):
     """Omega_c h^2 from the joint solver.  The background step is skipped when
-    the run ends SM-locked (phase 1.5S).  Returns NaN on a failed solve."""
+    the run ends in Phase 3 or SM-locked (phase 1.5S).  With PHASE3_REQUIRE, a
+    run that would take the legacy background step is first re-solved down
+    PHASE3_RETRY_SDOT.  Returns NaN on a failed solve."""
     solver = BoltzmannSolver(cosmo, _make_model(mX, mY, alphaX))
-    try:
-        joint = timed_solve(solver.solve_boltzmann_joint, epsX=eps,
-                            return_bg_ICs=True, min_eps_floor_ratio=0.0,
-                            GoH_exit_thresh=GOH_EXIT_THRESH, xmax=XMAX_JOINT,
-                            phase2_form="Y", verbose=False, **PHASE3_KW)
-    except Exception as e:
-        _log_nan(mX, mY, alphaX, eps, e)
-        return np.nan
+    tries = [PHASE3_KW]
+    if PHASE3_REQUIRE:
+        tries += [{**PHASE3_KW, "Sdot_switch_thresh": s} for s in PHASE3_RETRY_SDOT]
 
-    if (REQUIRE_CONVERGED and not joint["converged"]
-            and joint["phase_final"] not in ACCEPT_UNCONVERGED_PHASES):
-        _log_nan(mX, mY, alphaX, eps, _NotConverged("joint"))
-        return np.nan
+    first = None                         # the PHASE3_KW run: the legacy fallback
+    for kw in tries:
+        try:
+            joint = timed_solve(solver.solve_boltzmann_joint, epsX=eps,
+                                return_bg_ICs=True, min_eps_floor_ratio=0.0,
+                                GoH_exit_thresh=GOH_EXIT_THRESH, xmax=XMAX_JOINT,
+                                phase2_form="Y", verbose=False, **kw)
+        except Exception as e:
+            _log_nan(mX, mY, alphaX, eps, e)
+            if first is None:            # the PHASE3_KW run itself failed
+                return np.nan
+            continue                     # a failed retry = did not engage
 
-    # phase_final == 3: Phase 3 already applied decay + dilution in-solver and
-    # YX_relic is Omega-ready, exactly like the SM-locked (1.5S) exit.
-    if joint["phase_final"] in ("1.5S", 3):
-        return joint["YX_relic"] * mX * s0_cosmo / rhoc
+        if (REQUIRE_CONVERGED and not joint["converged"]
+                and joint["phase_final"] not in ACCEPT_UNCONVERGED_PHASES):
+            if first is None:
+                _log_nan(mX, mY, alphaX, eps, _NotConverged("joint"))
+                return np.nan
+            continue
+
+        # phase_final == 3: Phase 3 already applied decay + dilution in-solver
+        # and YX_relic is Omega-ready, exactly like the SM-locked (1.5S) exit.
+        if joint["phase_final"] in ("1.5S", 3):
+            return joint["YX_relic"] * mX * s0_cosmo / rhoc
+        if first is None:
+            first = joint
+
+    if PHASE3_REQUIRE:
+        print(f"LEGACY coupling mX={mX:.3f} mY={mY:.3f} coupling={alphaX:.3e} "
+              f"eps={eps:g}: Phase 3 never engaged (Sdot down to "
+              f"{PHASE3_RETRY_SDOT[-1]:g}, phase_final={first['phase_final']}); "
+              f"legacy value kept", flush=True)
     try:
         yield_X = timed_solve(solver.solve_background, epsX=eps,
-                              bg_ICs=joint["bg_ICs"], correct_Y_decay=True,
+                              bg_ICs=first["bg_ICs"], correct_Y_decay=True,
                               traj_has_decay=True, stop_on_rhoY=True,
                               verbose=False)["YX_final"]
     except Exception as e:
