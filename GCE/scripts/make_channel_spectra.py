@@ -163,72 +163,81 @@ def run_point(i: int) -> str:
     return ""
 
 
-ap = argparse.ArgumentParser()
-ap.add_argument("-n", "--ncores", type=int,
-                    default=len(os.sched_getaffinity(0)))
-# Sharding across cluster ranks.  Not configuration -- like --ncores it says
-# how to run, not what to compute -- so it stays a flag.  Rank `w` of `W` takes
-# GRID columns w, w+W, w+2W, ...: a stride rather than a contiguous block,
-# because cost rises smoothly with mY along a column and a block would hand one
-# rank all the expensive points.  Every rank writes into the same OUT_DIR; that
-# is safe because run_spectrum skips an existing file and renames its own
-# temporary into place, so an overlap costs time, never a corrupt file.
-ap.add_argument("--worker", type=int, default=0, metavar="W",
-                help="this rank's index, 0 <= W < --nworkers (default 0)")
-ap.add_argument("--nworkers", type=int, default=1, metavar="N",
-                help="number of cluster ranks sharing the grid (default 1)")
-ap.add_argument("--check", action="store_true",
-                help="report what is still missing and exit; starts no Pythia")
-args = ap.parse_args()
-if not 0 <= args.worker < args.nworkers:
-    ap.error(f"--worker must satisfy 0 <= {args.worker} < {args.nworkers}")
+# Everything below runs the grid.  It is guarded so that `extension_grid`,
+# `triangle_grid`, `GRID` and `channels_at` can be imported -- by a downstream
+# fit script, or by --check tooling -- without starting a 256-way pool, which
+# importing this module used to do.
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-n", "--ncores", type=int,
+                        default=len(os.sched_getaffinity(0)))
+    # Sharding across cluster ranks.  Not configuration -- like --ncores it says
+    # how to run, not what to compute -- so it stays a flag.  Rank `w` of `W` takes
+    # GRID columns w, w+W, w+2W, ...: a stride rather than a contiguous block,
+    # because cost rises smoothly with mY along a column and a block would hand one
+    # rank all the expensive points.  Every rank writes into the same OUT_DIR; that
+    # is safe because run_spectrum skips an existing file and renames its own
+    # temporary into place, so an overlap costs time, never a corrupt file.
+    ap.add_argument("--worker", type=int, default=0, metavar="W",
+                    help="this rank's index, 0 <= W < --nworkers (default 0)")
+    ap.add_argument("--nworkers", type=int, default=1, metavar="N",
+                    help="number of cluster ranks sharing the grid (default 1)")
+    ap.add_argument("--check", action="store_true",
+                    help="report what is still missing and exit; starts no Pythia")
+    args = ap.parse_args()
+    if not 0 <= args.worker < args.nworkers:
+        ap.error(f"--worker must satisfy 0 <= {args.worker} < {args.nworkers}")
 
-todo = list(range(args.worker, GRID.shape[1], args.nworkers))
-# Longest-processing-time-first.  Cost per point climbs monotonically with mY
-# (more phase space to shower: ~10 core-min at mY=5, ~26 at mY=100), and the
-# grid is built in ascending mY, so the default order leaves every rank's most
-# expensive points for the end -- exactly the ragged tail that decides the
-# makespan.  Handing the pool the heavy points first lets the cheap ones fill
-# in behind them.
-if args.check:
-    # Which (point, channel) files this rank's slice still owes.  Mirrors the
-    # `mY < min_mY(ch)` skip in run_point exactly, so "0 missing" means
-    # "nothing left to do", not "nothing left that I know how to name".
-    want = miss = 0
-    short_points = []
-    for i in todo:
-        mX, mY = (float(v) for v in GRID[:, i])
-        open_ch = [ch for ch in channels_at(i) if mY >= min_mY(ch)]
-        gap = [ch for ch in open_ch
-               if not spectrum_path(mX, mY, ch, N_EVENTS, SEED, OUT_DIR).exists()]
-        want += len(open_ch)
-        miss += len(gap)
-        if gap:
-            short_points.append((mX, mY, gap))
-    print(f"rank {args.worker}/{args.nworkers}: {want - miss}/{want} files present, "
-          f"{miss} missing across {len(short_points)} of {len(todo)} points")
-    for mX, mY, gap in short_points[:10]:
-        print(f"  mX={mX:7.2f} mY={mY:7.2f}  missing: {' '.join(gap)}")
-    if len(short_points) > 10:
-        print(f"  ... and {len(short_points) - 10} more points")
-    sys.exit(0 if miss == 0 else 1)
+    todo = list(range(args.worker, GRID.shape[1], args.nworkers))
+    # Longest-processing-time-first.  Cost per point climbs monotonically with mY
+    # (more phase space to shower: ~10 core-min at mY=5, ~26 at mY=100), and the
+    # grid is built in ascending mY, so the default order leaves every rank's most
+    # expensive points for the end -- exactly the ragged tail that decides the
+    # makespan.  Handing the pool the heavy points first lets the cheap ones fill
+    # in behind them.
+    if args.check:
+        # Which (point, channel) files this rank's slice still owes.  Mirrors the
+        # `mY < min_mY(ch)` skip in run_point exactly, so "0 missing" means
+        # "nothing left to do", not "nothing left that I know how to name".
+        want = miss = 0
+        short_points = []
+        for i in todo:
+            mX, mY = (float(v) for v in GRID[:, i])
+            open_ch = [ch for ch in channels_at(i) if mY >= min_mY(ch)]
+            gap = [ch for ch in open_ch
+                   if not spectrum_path(mX, mY, ch, N_EVENTS, SEED, OUT_DIR).exists()]
+            want += len(open_ch)
+            miss += len(gap)
+            if gap:
+                short_points.append((mX, mY, gap))
+        print(f"rank {args.worker}/{args.nworkers}: {want - miss}/{want} files present, "
+              f"{miss} missing across {len(short_points)} of {len(todo)} points")
+        for mX, mY, gap in short_points[:10]:
+            print(f"  mX={mX:7.2f} mY={mY:7.2f}  missing: {' '.join(gap)}")
+        if len(short_points) > 10:
+            print(f"  ... and {len(short_points) - 10} more points")
+        sys.exit(0 if miss == 0 else 1)
 
-todo.sort(key=lambda i: -GRID[1, i])
-n = len(todo)
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-print(f"rank {args.worker}/{args.nworkers}: {n} of {GRID.shape[1]} points "
-      f"({N_MAIN} main + {GRID.shape[1] - N_MAIN} hP extension), "
-      f"<={len(CHANNELS)} channels each, {N_EVENTS} events, "
-      f"{args.ncores} cores -> {OUT_DIR}", flush=True)
-t0 = time.time()
+    todo.sort(key=lambda i: -GRID[1, i])
+    n = len(todo)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"rank {args.worker}/{args.nworkers}: {n} of {GRID.shape[1]} points "
+          f"({N_MAIN} main + {GRID.shape[1] - N_MAIN} hP extension), "
+          f"<={len(CHANNELS)} channels each, {N_EVENTS} events, "
+          f"{args.ncores} cores -> {OUT_DIR}", flush=True)
+    t0 = time.time()
 
-with mp.Pool(args.ncores) as pool:
-    for k, msg in enumerate(pool.imap_unordered(run_point, todo, 1), 1):
-        if msg:
-            print(msg, flush=True)
-        if k % 200 == 0 or k == n:
-            dt = time.time() - t0
-            print(f"  {k}/{n}  {dt/60:.0f} min elapsed, "
-                  f"{dt/k*(n-k)/60:.0f} min left", flush=True)
+    with mp.Pool(args.ncores) as pool:
+        for k, msg in enumerate(pool.imap_unordered(run_point, todo, 1), 1):
+            if msg:
+                print(msg, flush=True)
+            if k % 200 == 0 or k == n:
+                dt = time.time() - t0
+                print(f"  {k}/{n}  {dt/60:.0f} min elapsed, "
+                      f"{dt/k*(n-k)/60:.0f} min left", flush=True)
 
-print(f"done in {(time.time()-t0)/60:.1f} min", flush=True)
+    print(f"done in {(time.time()-t0)/60:.1f} min", flush=True)
+
+
+if __name__ == "__main__":
+    main()
