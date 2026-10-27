@@ -108,25 +108,38 @@ Expectation from a b bbar-only proxy along the diagonal (direct bb at m_DM = mX/
 ignores WW*): 3-sigma closes near mX ~ 112; with WW* included the full hP mix is already
 at Delta chi2 ~ 16 at (mX, mY) = (115.5, 110). 130 GeV is the margin.
 
-## Stage 3 — downstream, on the LOCAL machine
+## Stage 3 — downstream (DEFERRED; see the covariance section below)
 
 1. Copy the 28 Stage-1 WW files and the Stage-2 files from this branch into the local
-   `GCE/channel_spectra/` (new files; nothing local is overwritten).
-2. Re-run the hP free-<sigma v> fit on the main grid (`GCE/scripts/make_GCE_sv_grids.py`,
-   local only): the 28 points with mY >= 90.38 now include WW*.
+   `GCE/channel_spectra/` (new files; nothing local is overwritten).  Done: `--check`
+   reports 162373/162373 files present, 0 missing, over 16384 main + 578 extension
+   points.
+2. Re-run the hP free-<sigma v> fit on the main grid (`GCE/scripts/make_GCE_sv_grids.py`):
+   the 28 points with mY >= 90.38 now include WW*.  Under 'paper', like everything
+   else from now on.
 3. Fit the extension grid (needs a small extension of that script, same style).
-4. Thermal relic: `GCE/scripts/make_GCE_sv_thermal_relic_grids.py` (local only) already
+4. Thermal relic: `GCE/scripts/make_GCE_sv_thermal_relic_grids.py` already
    has the 2026-10-20 coverage fix (RV_MAX 0.995, one coarse row below mY = 5,
    <sigma v> = 0 at mY = mX) and needs a rerun (~2.5 h); its coarse grid stops at
    mX = 100, so the hP relic over 100-130 needs the same extension.
 
-### Why the fits stay local
-This branch's `GCE/gce_data.py` / `GCE/likelihood.py` carry `d4e4419c99`'s
-`sigma_mod_scaling='paper'` hemisphere covariance (Sigma_mod x 0.45^2 in the south). The
-local tree that produced `GCE/output/sv_fits/` uses the rescaled-correlation prescription.
-A fit run here would not be comparable with the local main-grid fit. The spectra do not
-depend on the covariance, so Stages 1-2 are safe here. Do not change either file on this
-branch as part of this campaign; which prescription to use is the user's decision.
+### The covariance prescription (RESOLVED 2026-10-27)
+`sigma_mod_scaling='paper'` is the prescription: this branch's `GCE/gce_data.py` /
+`GCE/likelihood.py` as of `d4e4419c99` (Sigma_mod x 0.45^2 in the south). The user's
+decision; do not change either file back. The paragraph this replaces said the fits had
+to stay on the local machine because the two trees disagreed -- that is settled now, and
+a fit may run wherever is convenient.
+
+What follows from it. `GCE/output/sv_fits/` was produced by the LOCAL tree under the
+rescaled-correlation prescription, so it is superseded: no chi2 read from it is on the
+'paper' scale, and the main grid and the extension must be fitted under the same one
+before their contours go on one figure. Measured size of the gap at the hP node
+(mX, mY) = (80.58, 76.89): chi2 = 15.47 under 'paper' against 15.60 from the
+local-produced grid.
+
+The fits themselves are DEFERRED. The campaign is producing relic values first; Stage 3
+items 2-3 do not run yet. The spectra never depended on the covariance, so Stages 1-2
+were always safe here.
 
 ## Reproducibility note
 The cache is reproducible statistically, not bit-for-bit: `make_channel_spectra.py` builds
