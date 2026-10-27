@@ -131,8 +131,8 @@ def j_factor(roi="both", gamma=GAMMA_DEF, r_c=RC_DEF,
     J = np.exp(log_j(np.log(np.clip(psi, psi_tab[0], psi_tab[-1]))))
 
     w = np.cos(B)                                   # dOmega = cos(b) db dl
-    dO = np.trapz(np.trapz(w, lat, axis=1), lon)
-    jbar = np.trapz(np.trapz(J * w, lat, axis=1), lon) / dO
+    dO = np.trapezoid(np.trapezoid(w, lat, axis=1), lon)
+    jbar = np.trapezoid(np.trapezoid(J * w, lat, axis=1), lon) / dO
 
     if not return_solid_angle:
         return jbar

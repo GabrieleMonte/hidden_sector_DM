@@ -77,7 +77,7 @@ def rebin_to_gce(E, dPhidE):
             out[i] = 0.0                  # entirely above the kinematic endpoint
             continue
         g = np.linspace(np.log(lo), np.log(min(hi, E[-1])), 33)
-        out[i] = np.trapz(np.exp(np.interp(g, lnE, lny)), g) / np.log(hi / lo)
+        out[i] = np.trapezoid(np.exp(np.interp(g, lnE, lny)), g) / np.log(hi / lo)
     return out
 
 
