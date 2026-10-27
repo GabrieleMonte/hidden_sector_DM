@@ -26,8 +26,11 @@ cd /global/u1/g/gab97/secluded_DM
 # processes rather than one after another.  66 nodes per output caps the useful
 # worker count at 66 each; 3 x 66 = 198 fits the node's 256 hardware threads.
 # make_relic_grid checkpoints after every node, so a wall hit loses at most one.
-NCORES=66
-for ONLY in secluded 1e-7 1e-8; do
+# Both are overridable so the same script serves a whole-node job and a set of
+# small `shared` jobs, which schedule far sooner when `regular` is backed up.
+ONLY_LIST=${RELIC_EXT_ONLY:-"secluded 1e-7 1e-8"}
+NCORES=${RELIC_EXT_NCORES:-66}
+for ONLY in $ONLY_LIST; do
     python GCE/scripts/make_relic_grid_hP_ext.py --only "$ONLY" -n "$NCORES" &
 done
 wait

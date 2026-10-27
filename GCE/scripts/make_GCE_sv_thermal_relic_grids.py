@@ -81,6 +81,16 @@ COUPLING_GUESS = {'hP': 0.1, 'vP': 1e-2}
 OMEGA_POWER    = {'hP': 4,              # sigmav ~ lam_s^2 lam_p^2 = lam^4
                   'vP': 2}              # sigmav ~ alpha_X^2
 
+# Which portals to solve.  'vP' also writes the bP and blP files, for the reason
+# given at the save below.  Set to ('hP',) to refresh the Higgs-portal grid alone:
+# that halves the run, and the three vector-portal files are then left untouched
+# rather than rewritten with the same numbers.
+PORTALS = ('hP', 'vP')
+
+if not set(PORTALS) <= set(COUPLING_RANGE):
+    raise ValueError(f'PORTALS {PORTALS} must come from {tuple(COUPLING_RANGE)}; '
+                     'bP and blP are not solved, they are written from the vP solve')
+
 cosmo = Cosmology()
 
 def _model(portal, mX, mY, coupling):
@@ -155,16 +165,16 @@ def relic_grid(portal):
             'mX_coarse': 10.0 ** LMX_C, 'mY_coarse': 10.0 ** (LMX_C + LRV_C),
             'coupling_coarse': coupling_c}
 
-dic_hP = relic_grid('hP')
-dic_vP = relic_grid('vP')
+dics = {portal: relic_grid(portal) for portal in PORTALS}
 # The vector portals share the hidden sector, and solve_boltzmann_thermSM sees only
 # mX, mY, gX, gY and sigmav_XX_to_YY -- never the portal -- so their thermal relic
 # is identical (checked: same Omega h^2 to 4 digits).  Solved once, saved three times.
-dic_bP = dic_vP
-dic_blP = dic_vP
+if 'vP' in dics:
+    dics['bP'] = dics['vP']
+    dics['blP'] = dics['vP']
 
 #save them in GCE/output/sv_relic_fits/
 OUT_DIR = ROOT / 'GCE' / 'output' / 'sv_relic_fits'
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-for name, dic in [('hP', dic_hP), ('vP', dic_vP), ('bP', dic_bP), ('blP', dic_blP)]:
+for name, dic in dics.items():
     np.savez(OUT_DIR / f'GCE_sv_thermal_relic_grid_{name}.npz', mX=MX_GRID, mY=MY_GRID, **dic)
