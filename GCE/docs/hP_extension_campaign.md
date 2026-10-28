@@ -108,7 +108,7 @@ Expectation from a b bbar-only proxy along the diagonal (direct bb at m_DM = mX/
 ignores WW*): 3-sigma closes near mX ~ 112; with WW* included the full hP mix is already
 at Delta chi2 ~ 16 at (mX, mY) = (115.5, 110). 130 GeV is the margin.
 
-## Stage 3 — downstream (DEFERRED; see the covariance section below)
+## Stage 3 — downstream (hP DONE 2026-10-28; vP/bP/blP still to refit)
 
 1. Copy the 28 Stage-1 WW files and the Stage-2 files from this branch into the local
    `GCE/channel_spectra/` (new files; nothing local is overwritten).  Done: `--check`
@@ -116,8 +116,30 @@ at Delta chi2 ~ 16 at (mX, mY) = (115.5, 110). 130 GeV is the margin.
    points.
 2. Re-run the hP free-<sigma v> fit on the main grid (`GCE/scripts/make_GCE_sv_grids.py`):
    the 28 points with mY >= 90.38 now include WW*.  Under 'paper', like everything
-   else from now on.
-3. Fit the extension grid (needs a small extension of that script, same style).
+   else from now on.  DONE 2026-10-28.  The full refit costs ~2.1 h, but almost none
+   of it was needed: `cascade_template` depends on (mX, mY) and the halo alone, never
+   on the covariance, so the 16356 templates already stored in the grid are still
+   exact (rebuilt and compared bit-for-bit at 327 of them: worst difference 0.000e+00)
+   and only had to be run through `gls_fit` again.  The 28 WW* templates were the only
+   ones rebuilt.  Minutes, not hours.
+3. Fit the extension grid.  DONE 2026-10-28, same pass, 578 points, ~4 min.
+   `make_GCE_sv_grids.py` now carries `PORTALS` / `EXT_PORTALS` and writes
+   `GCE_sv_grid_hP_ext_south.npz` beside the main file, so this is reproducible from
+   the production driver alone.
+
+   RESULT. Best fit moves to chi2 = 15.095 at (mX, mY) = (73.46, 65.85), from 15.603
+   at (80.58, 76.89) under the old covariance.  Against it the extension holds no
+   point within 1 or 2 sigma and 17 within 3 sigma, and the 3-sigma contour closes at
+   **mX = 106.4 GeV** -- 24 GeV inside the grid edge, and below the ~112 the bb-only
+   proxy predicted.  2 sigma was already closed at the main grid's own mX = 100 edge
+   (min dchi2 there is 8.01, against 6.18).  The seam is smooth: min dchi2 goes 8.01
+   at mX = 100 to 8.60 at mX = 101.55, rising monotonically to 26.51 at 129.98.
+
+   STILL OPEN: `GCE_sv_grid_{vP,bP,blP}_south.npz` are untouched, so they are still
+   the local-tree grids on the rescaled-correlation covariance and must not go on a
+   figure beside hP until they are refit.  The same template reuse applies to them
+   (their stored templates are stale only at the same 28 WW* points), so it is about
+   a minute each, not the 2.5 min a full refit costs.
 4. Thermal relic: `GCE/scripts/make_GCE_sv_thermal_relic_grids.py` already
    has the 2026-10-20 coverage fix (RV_MAX 0.995, one coarse row below mY = 5,
    <sigma v> = 0 at mY = mX) and needs a rerun (~2.5 h); its coarse grid stops at
@@ -137,9 +159,9 @@ before their contours go on one figure. Measured size of the gap at the hP node
 (mX, mY) = (80.58, 76.89): chi2 = 15.47 under 'paper' against 15.60 from the
 local-produced grid.
 
-The fits themselves are DEFERRED. The campaign is producing relic values first; Stage 3
-items 2-3 do not run yet. The spectra never depended on the covariance, so Stages 1-2
-were always safe here.
+Stage 3 items 2-3 are DONE for the Higgs portal as of 2026-10-28; the three vector
+portals are not, and are flagged under item 3. The spectra never depended on the
+covariance, so Stages 1-2 were always safe here.
 
 ## Reproducibility note
 The cache is reproducible statistically, not bit-for-bit: `make_channel_spectra.py` builds

@@ -1,3 +1,25 @@
+"""Free-<sigma v> GCE fit of every portal over the (mX, mY) grid.
+
+For each grid point the cascade template is built from the channel-spectra cache and
+<sigma v> is minimised out against the GCE measurement by a generalised least squares
+fit, so <sigma v> is read off the gamma rays alone and no relic constraint enters.
+
+    cosmo_env
+    python GCE/scripts/make_GCE_sv_grids.py
+
+Set PORTALS to pick which portals run.  Above the main grid's mX = 100 GeV edge the
+Higgs portal continues over `make_channel_spectra.EXT_GRID`, written to its own file.
+
+Output: GCE/output/sv_fits/
+    GCE_sv_grid_{portal}_{REGION}.npz          the 16384 main-grid points
+    GCE_sv_grid_{portal}_ext_{REGION}.npz      the 578 extension points, hP only
+        mX, mY       [GeV]     the points, in the grid's own order
+        chi2                   chi^2 at the best-fit <sigma v>
+        sigmav       [cm^3/s]  the GLS <sigma v>, clamped at >= 0
+        sigmav_err   [cm^3/s]  its 1-sigma error
+        ts                     the 14-bin template at <sigma v> = 1 cm^3/s
+"""
+
 import sys
 from pathlib import Path
 from tqdm import trange
@@ -16,6 +38,9 @@ import time
 from scipy.optimize import brentq
 from scipy.interpolate import griddata
 from hidden_sector_DM.HiddenSectorDM import Cosmology, BoltzmannSolver, s0_cosmo, rhoc
+
+sys.path.insert(0, str(ROOT / 'GCE' / 'scripts'))    # sibling scripts
+from make_channel_spectra import EXT_GRID               # the hP mX = 100-130 block
 
 # ---- configuration -------------------------------------------------------
 MX_LIM = (15.0, 100.0)   # GeV
@@ -74,6 +99,41 @@ REGION = "south"        # 'both' (40x40), 'south' or 'north'
 N_EVENTS = 400_000      # what the channel_spectra cache holds
 SEED = DEFAULT_SEED
 ALPHAX = 1e-2           # the dataclass wants a default value
+N_GCE_BINS = 14         # bins in the measurement, so columns in a template
+
+PORTAL_NAMES = ('hP', 'vP', 'bP', 'blP')
+
+# Which portals to fit, and which of them continue past the main grid's mX = 100 GeV
+# edge.  Set PORTALS to ('hP',) to refresh the Higgs portal alone: the other three are
+# then left as they are rather than rewritten with the same numbers.  Only the Higgs
+# portal has an extension -- make_channel_spectra generates that block's channels for
+# it alone -- so EXT_PORTALS cannot name any other.
+PORTALS = ('hP', 'vP', 'bP', 'blP')
+EXT_PORTALS = ('hP',)
+
+if not set(PORTALS) <= set(PORTAL_NAMES):
+    raise ValueError(f'PORTALS {PORTALS} must come from {PORTAL_NAMES}')
+if not set(EXT_PORTALS) <= set(PORTALS) & {'hP'}:
+    raise ValueError(f'EXT_PORTALS {EXT_PORTALS} must be fitted portals, and only the '
+                     'Higgs portal has cached spectra above mX = 100 GeV')
+
+
+def portal_model(name, mX, mY):
+    """The portal `name` at (`mX`, `mY`) in GeV, at the overlay coupling ALPHAX.
+
+    The coupling never reaches the template -- `cascade_template` divides the
+    normalisation out -- so it is only here because the dataclasses want a value.
+    """
+    if name == 'hP':
+        return HiggsPortal(mX=mX, mY=mY, gX=2, gY=1, lam=ALPHAX)
+    elif name == 'vP':
+        return VectorPortal(mX=mX, mY=mY, gX=2, gY=3, alphaX=ALPHAX)
+    elif name == 'bP':
+        return BaryonPortal(mX=mX, mY=mY, gX=2, gY=3, alphaX=ALPHAX)
+    elif name == 'blP':
+        return BLPortal(mX=mX, mY=mY, gX=2, gY=3, alphaX=ALPHAX)
+    raise ValueError(f'unknown portal {name!r}; choose one of {PORTAL_NAMES}')
+
 
 def sigmav_chi2_GCE(model, phi_GCE, Cinv_GCE):
     t = cascade_template(model, n_events=N_EVENTS, seed=SEED)
@@ -84,31 +144,35 @@ def sigmav_chi2_GCE(model, phi_GCE, Cinv_GCE):
 
 phi, Cinv = measurement(region=REGION)      # once; independent of the model
 
-n_pts = GRID.shape[1]
+def fit_grid(name, grid, desc):
+    """GLS fit of portal `name` over `grid`, a (2, n) array of (mX, mY) in GeV.
 
-chi2_hP, chi2_vP, chi2_bP, chi2_blP = np.full(n_pts, np.nan), np.full(n_pts, np.nan), np.full(n_pts, np.nan), np.full(n_pts, np.nan)
-ts_hP, ts_vP, ts_bP, ts_blP = np.full((n_pts, 14), np.nan), np.full((n_pts, 14), np.nan), np.full((n_pts, 14), np.nan), np.full((n_pts, 14), np.nan)
-sv_hP, sv_vP, sv_bP, sv_blP = np.full(n_pts, np.nan), np.full(n_pts, np.nan), np.full(n_pts, np.nan), np.full(n_pts, np.nan)
-sv_err_hP, sv_err_vP, sv_err_bP, sv_err_blP = np.full(n_pts, np.nan), np.full(n_pts, np.nan), np.full(n_pts, np.nan), np.full(n_pts, np.nan)
+    Returns the save dictionary: `chi2`, `sigmav` [cm^3/s], `sigmav_err` [cm^3/s] and
+    the templates `ts`, one row per grid point in the grid's own order.
+    """
+    n_pts = grid.shape[1]
+    chi2 = np.full(n_pts, np.nan)
+    sv = np.full(n_pts, np.nan)
+    sv_err = np.full(n_pts, np.nan)
+    ts = np.full((n_pts, N_GCE_BINS), np.nan)
 
-for k in trange(n_pts):
-    mX, mY = (float(v) for v in GRID[:, k])
-    mod_hP = HiggsPortal(mX=mX, mY=mY, gX=2, gY=1, lam=ALPHAX)
-    mod_vP = VectorPortal(mX=mX, mY=mY, gX=2, gY=3, alphaX=ALPHAX)
-    mod_bP = BaryonPortal(mX=mX, mY=mY, gX=2, gY=3, alphaX=ALPHAX)
-    mod_blP = BLPortal(mX=mX, mY=mY, gX=2, gY=3, alphaX=ALPHAX)
-    ts_hP[k], sv_hP[k], sv_err_hP[k],  chi2_hP[k]  = sigmav_chi2_GCE(mod_hP, phi, Cinv)
-    ts_vP[k], sv_vP[k], sv_err_vP[k],  chi2_vP[k]  =sigmav_chi2_GCE(mod_vP, phi, Cinv)
-    ts_bP[k], sv_bP[k], sv_err_bP[k],  chi2_bP[k] = sigmav_chi2_GCE(mod_bP, phi, Cinv)
-    ts_blP[k], sv_blP[k], sv_err_blP[k],  chi2_blP[k] =sigmav_chi2_GCE(mod_blP, phi, Cinv)
+    for k in trange(n_pts, desc=desc):
+        mX, mY = (float(v) for v in grid[:, k])
+        model = portal_model(name, mX, mY)
+        ts[k], sv[k], sv_err[k], chi2[k] = sigmav_chi2_GCE(model, phi, Cinv)
 
-dic_hP={'chi2':chi2_hP, 'sigmav': sv_hP, 'sigmav_err': sv_err_hP, 'ts':ts_hP}
-dic_vP={'chi2':chi2_vP, 'sigmav': sv_vP, 'sigmav_err': sv_err_vP, 'ts':ts_vP}
-dic_bP={'chi2':chi2_bP, 'sigmav': sv_bP, 'sigmav_err': sv_err_bP, 'ts':ts_bP}
-dic_blP={'chi2':chi2_blP, 'sigmav': sv_blP, 'sigmav_err': sv_err_blP, 'ts':ts_blP}
+    return {'chi2': chi2, 'sigmav': sv, 'sigmav_err': sv_err, 'ts': ts}
+
 
 #save them in GCE/output/sv_fits/
 OUT_DIR = ROOT / 'GCE' / 'output' / 'sv_fits'
 OUT_DIR.mkdir(parents=True, exist_ok=True)
-for name, dic in [('hP', dic_hP), ('vP', dic_vP), ('bP', dic_bP), ('blP', dic_blP)]:
+
+for name in PORTALS:
+    dic = fit_grid(name, GRID, f'{name} main')
     np.savez(OUT_DIR / f'GCE_sv_grid_{name}_{REGION}.npz', mX=MX_GRID, mY=MY_GRID, **dic)
+
+    if name in EXT_PORTALS:
+        dic = fit_grid(name, EXT_GRID, f'{name} ext')
+        np.savez(OUT_DIR / f'GCE_sv_grid_{name}_ext_{REGION}.npz',
+                 mX=EXT_GRID[0], mY=EXT_GRID[1], **dic)
