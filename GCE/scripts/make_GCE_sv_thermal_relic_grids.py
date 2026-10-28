@@ -69,7 +69,8 @@ print(f"{GRID.shape[1]} of {N_POINTS} points, "
 # ---- coupling that gives Omega_c h^2 = 0.12 in the SM-thermalised regime ----
 OCH2_TARGET  = 0.12
 N_MX_COARSE  = 46            # coarse (log10 mX, log10 mY/mX) grid, interpolated onto GRID
-N_RV_COARSE  = 34
+N_RV_COARSE  = 34            # rows the uniform log10 rv ladder carries, up to RV_MAX
+N_RV_BETA    = 4             # rows replacing its top one, uniform in log10 beta
 RV_MAX       = 0.995         # the solve fails at mY = mX; 0.995 covers every GRID point below it
 RELIC_RTOL   = 3e-3
 
@@ -131,10 +132,32 @@ def _coupling_relic(portal, mX, mY):
 
 # ---- the relic -----------------------------------------------------------
 
+def coarse_rv_rows(rv_min, rv_max=RV_MAX, n_rv=N_RV_COARSE, n_beta=N_RV_BETA):
+    """log10 of the coarse mY/mX rows, placed densely where the s-wave closes.
+
+    Everything below rv ~ 0.91 is the old uniform ladder in log10 rv, unchanged.  Its
+    single top row is replaced by `n_beta` rows at a uniform step in log10 beta, with
+    beta = sqrt(1 - rv^2).
+
+    The s-wave shuts off as beta -> 0, so a ladder uniform in log10 rv leaves ONE
+    interval from 0.909 to `rv_max` covering six fine-grid rows, and the <sigma v>
+    interpolated across it is wrong by up to 65% (vP) or 9% (hP) against an exact
+    solve.  The same number of rows placed by beta brings both under 4%, at every mX
+    tried.  Interpolating in log beta while leaving the rows alone was also tried and
+    is WORSE for hP -- its lam barely moves with rv and turns over near `rv_max` -- so
+    it is the row placement that matters, not the interpolation variable.  Measured in
+    the scratchpad script rv_mesh_compare.py.
+    """
+    ladder = np.linspace(np.log10(rv_min), np.log10(rv_max), n_rv)
+    beta = np.sqrt(1.0 - (10.0 ** ladder[-2:]) ** 2)
+    log_beta = np.linspace(np.log10(beta[0]), np.log10(beta[1]), n_beta + 1)[1:]
+    return np.concatenate([ladder[:-1], 0.5 * np.log10(1.0 - (10.0 ** log_beta) ** 2)])
+
+
 lmx_c = np.linspace(np.log10(MX_GRID.min()), np.log10(MX_GRID.max()), N_MX_COARSE)
-lrv_c = np.linspace(np.log10((MY_GRID / MX_GRID).min()), np.log10(RV_MAX), N_RV_COARSE)
+lrv_c = coarse_rv_rows((MY_GRID / MX_GRID).min())
 LMX_C, LRV_C = np.meshgrid(lmx_c, lrv_c, indexing='ij')
-RV_STEP = 10.0 ** (lrv_c[1] - lrv_c[0])      # one coarse row in mY/mX
+RV_STEP = 10.0 ** (lrv_c[1] - lrv_c[0])      # one coarse row in mY/mX, at the bottom
 
 n_pts = GRID.shape[1]
 
@@ -143,7 +166,7 @@ def relic_grid(portal):
     and evaluate the s-wave <sigma v> there [cm^3/s]."""
     coupling_c = np.full(LMX_C.shape, np.nan)
     for i in trange(N_MX_COARSE, desc=portal):
-        for j in range(N_RV_COARSE):
+        for j in range(lrv_c.size):
             mX = 10.0 ** LMX_C[i, j]
             mY = mX * 10.0 ** LRV_C[i, j]
             # one row below the mY floor, so the interpolation covers mY = MY_LIM[0]

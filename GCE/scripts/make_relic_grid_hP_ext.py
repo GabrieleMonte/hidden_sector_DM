@@ -166,7 +166,12 @@ def _merge_into_main():
 
             rows = [int(np.argmin(np.abs(log_rv - v))) for v in e["log_rv"]]
             if max(abs(log_rv[r] - v) for r, v in zip(rows, e["log_rv"])) > EMBED_TOL:
-                raise RuntimeError("the extension's rv rows are not main grid rows")
+                raise RuntimeError(
+                    f"{main_path.name} has {log_rv.size} rv rows and "
+                    f"{ext_path.name} has {e['log_rv'].size} that are not among them. "
+                    "The two meshes come from the same make_relic_grid.rv_rows, so "
+                    "this means one was solved before a mesh change and the other "
+                    "after: re-run make_relic_grid_hP.py, then this driver.")
 
             n_mx = log_mX.size + e["log_mX"].size
             out = {"log_mX": np.concatenate([log_mX, e["log_mX"]]), "log_rv": log_rv,

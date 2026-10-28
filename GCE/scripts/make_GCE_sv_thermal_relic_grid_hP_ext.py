@@ -39,6 +39,12 @@ hull loses edge points to that round-off.
 rv is capped at RV_MAX because the solve fails at mY = mX.  The extension's top
 row is rv = 1 exactly, where the s-wave closes and <sigma v> = 0 whatever the
 coupling, so nothing there needs one.
+
+Above rv ~ 0.93 the rows are placed at a uniform step in log10 beta, beta =
+sqrt(1 - rv^2), rather than in log10 rv, for the reason given on coarse_rv_rows in
+make_GCE_sv_thermal_relic_grids.py: the s-wave closes as beta -> 0, and a ladder
+uniform in log10 rv leaves one interval spanning several fine rows.  The two
+drivers' meshes must be changed together, as their root-finds must.
 """
 
 import sys
@@ -66,6 +72,7 @@ OCH2_TARGET = 0.12
 RV_MAX      = 0.995          # the solve fails at mY = mX
 RELIC_RTOL  = 3e-3
 
+N_RV_BETA   = 4              # top rv rows placed by beta, not by log10 rv
 N_MX_COARSE = 8              # coarse mesh before padding; the extension spans only
 N_RV_COARSE = 8              # 0.1139 dex in mX and 0.2218 dex in rv, so 8 x 8 keeps
                              # the main driver's coarse density (0.0183 / 0.0394 dex)
@@ -136,8 +143,21 @@ lrv = np.log10(RV_GRID)
 # One padding step on either side in mX and one below in rv; see COARSE MESH.
 dmx = (lmx.max() - lmx.min())/(N_MX_COARSE - 1)
 drv = (lrv.max() - lrv.min())/(N_RV_COARSE - 1)
+def coarse_rv_rows(lrv_lo, rv_max=RV_MAX, n_rv=N_RV_COARSE + 1, n_beta=N_RV_BETA):
+    """log10 of the coarse mY/mX rows, dense where the s-wave closes.
+
+    make_GCE_sv_thermal_relic_grids.coarse_rv_rows, on this driver's own ladder:
+    the uniform log10 rv rows up to the second-to-last, then `n_beta` rows at a
+    uniform step in log10 beta.  See that one for why.
+    """
+    ladder = np.linspace(lrv_lo, np.log10(rv_max), n_rv)
+    beta = np.sqrt(1.0 - (10.0 ** ladder[-2:]) ** 2)
+    log_beta = np.linspace(np.log10(beta[0]), np.log10(beta[1]), n_beta + 1)[1:]
+    return np.concatenate([ladder[:-1], 0.5 * np.log10(1.0 - (10.0 ** log_beta) ** 2)])
+
+
 lmx_c = np.linspace(lmx.min() - dmx, lmx.max() + dmx, N_MX_COARSE + 2)
-lrv_c = np.linspace(lrv.min() - drv, np.log10(RV_MAX), N_RV_COARSE + 1)
+lrv_c = coarse_rv_rows(lrv.min() - drv)
 
 LMX_C, LRV_C = np.meshgrid(lmx_c, lrv_c, indexing='ij')
 

@@ -198,6 +198,43 @@ one `PythiaRunner(seed=12345)` per worker process and never reseeds between file
 `imap_unordered` makes the order vary. Per-file seeding from (mX, mY, channel, seed) would
 make each file exactly regenerable; it was discussed and deliberately NOT done now.
 
+## The coarse rv mesh near mY = mX (RESOLVED 2026-10-28)
+XX -> YY shuts off as beta = sqrt(1 - rv^2) -> 0, so coarse rows uniform in log10 rv
+thin out exactly where the coupling turns over.  The thermal grid had ONE interval from
+rv = 0.909 to 0.995 covering six fine-grid rows, and the <sigma v> interpolated inside
+it was wrong by up to 65% (vP) and 9% (hP) against an exact Boltzmann solve, always
+HIGH -- it flattered the fit.  Rows above the ladder are now spaced uniformly in
+log10 beta instead (`rv_rows` / `coarse_rv_rows`), which holds the error under 4% at
+every mX tried, with no more rows than a log-rv refinement would need.
+
+Measured, in the scratchpad script rv_mesh_compare.py, as worst |d<sigma v>| over the
+fine rows at three mX per portal:
+
+    method                         vP        hP
+    uniform log rv (before)     64.0-64.7%  8.2-9.2%
+    4x denser, still log rv        18.7%    6.0-6.5%
+    log beta interpolation       3.9-4.6%  12.6-12.9%   <- WORSE than before for hP
+    beta-placed rows (chosen)    3.8-3.9%   1.4-1.5%
+
+Interpolating in log beta was rejected: hP's lam barely moves with rv and turns over
+near rv = 0.995, so it is not smooth in beta either.  It is the row PLACEMENT that
+matters, not the interpolation variable, which is why the fix leaves griddata alone.
+
+`make_relic_grid.py` carries the same spacing so a coupling read off either mesh
+agrees.  There the beta rows are APPENDED above the old ladder top of 0.95 rather than
+interleaved, and the first 67 rows are unchanged to the last bit: `load_state` still
+embeds every committed grid (checked: 2083 of 2083 nodes reused, 276 new nodes per eps
+to solve, and 36 for the extension).  The frozen `make_relic_grid_vP*.py` forks keep
+the old mesh on purpose -- they are the record of the 2026-09-30 campaign that produced
+the committed vP grids.
+
+Not an issue for eps < eps_therm.  Those grids stop at rv = 0.95, so the under-resolved
+interval was never sampled, and their 67 rows are twice as fine; a leave-one-row-out
+test puts them at ~1-7% in <sigma v> at rv 0.9-0.95 and sub-percent below 0.8.  Their
+relic <sigma v> also RISES with rv (x200 from rv 0.6 to 0.95) rather than falling, so
+at high rv those models are excluded for annihilating too much, by one to two orders of
+magnitude -- a few percent cannot move that.
+
 ## Related decisions
 - Contour levels: 2.30 / 6.18 / 11.83 (68.3 / 95.4 / 99.73% for 2 parameters). The fit
   notebooks' `9.12` level looks like a typo for 9.21 (99%) — flagged to the user, not

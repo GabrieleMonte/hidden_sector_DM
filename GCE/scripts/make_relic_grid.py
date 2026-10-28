@@ -85,12 +85,17 @@ EPS_SECLUDED = (1e-11, 5e-12, 1e-12)     # one freeze-out feeds all three; rv=0.
 
 MX_LIM   = (15.0, 100.0)                 # GeV; matches notebooks/GCE_fit_vP
 MY_LIM   = (5.0, 100.0)                  # GeV, capped from above by mX
-RV_MAX   = 0.95                          # rv = mY/mX; XX -> YY shuts off at rv = 1
-N_MX, N_RV, N_COUPLING = 46, 67, 8         # coarse (mX, rv) mesh; alpha_X per node.
-                                         # N_RV STAYS 67: the eps=1e-9 output is now
+RV_LADDER_MAX = 0.95                     # top of the uniform log10 rv ladder
+RV_MAX   = 0.995                         # top of the mesh; XX -> YY shuts off at rv = 1
+N_MX, N_RV_LADDER, N_COUPLING = 46, 67, 8  # coarse (mX, rv) mesh; alpha_X per node.
+                                         # N_RV_LADDER STAYS 67: the eps=1e-9 output is
                                          # 67 wide, and 67 does not embed in 34, so
                                          # reverting would make load_state discard it
                                          # and re-solve all 1053 nodes.
+N_RV_BETA = 6                            # rows ABOVE RV_LADDER_MAX, spaced in log10
+                                         # beta instead of log10 rv; see rv_rows.
+                                         # APPENDED, never interleaved, so every
+                                         # committed 67-row grid still embeds.
 ONLY_RV_COLUMNS = None                   # None = queue every rv column
 
 # Why a node has no coupling.  coupling_relic is NaN for all of these, which on
@@ -242,8 +247,32 @@ OUT_DIR = Path(__file__).resolve().parents[1] / "output" / "relic"
 
 cosmo = Cosmology()
 
+def rv_rows(rv_lo, rv_ladder_max=RV_LADDER_MAX, n_ladder=N_RV_LADDER,
+            rv_max=RV_MAX, n_beta=N_RV_BETA):
+    """log10 of the mY/mX rows: the uniform ladder, then beta-placed rows on top.
+
+    Up to `rv_ladder_max` these are the uniform log10 rv rows they have always been,
+    unchanged to the last bit, so a committed grid still embeds and `load_state`
+    keeps every node already solved.  Above it, `n_beta` rows are spaced uniformly in
+    log10 beta, with beta = sqrt(1 - rv^2).
+
+    XX -> YY closes as beta -> 0, so rows uniform in log10 rv thin out exactly where
+    the coupling turns over.  On the thermal grid, which had one such interval from
+    rv = 0.909 to 0.995, the <sigma v> interpolated inside it came out wrong by up to
+    65% for the vector portal and 9% for the Higgs portal against an exact solve;
+    spacing the same number of rows by beta holds both under 4%.
+    make_GCE_sv_thermal_relic_grids.py places its rows the same way, so a coupling
+    read off either mesh agrees with the other.
+    """
+    ladder = np.linspace(np.log10(rv_lo), np.log10(rv_ladder_max), n_ladder)
+    beta = np.sqrt(1.0 - np.array([rv_ladder_max, rv_max]) ** 2)
+    log_beta = np.linspace(np.log10(beta[0]), np.log10(beta[1]), n_beta + 1)[1:]
+    return np.concatenate([ladder, 0.5 * np.log10(1.0 - (10.0 ** log_beta) ** 2)])
+
+
 log_mX = np.linspace(*np.log10(MX_LIM), N_MX)
-log_rv = np.linspace(np.log10(MY_LIM[0] / MX_LIM[1]), np.log10(RV_MAX), N_RV)
+log_rv = rv_rows(MY_LIM[0] / MX_LIM[1])
+N_RV = log_rv.size
 mX_grid, rv_grid = np.meshgrid(10.0 ** log_mX, 10.0 ** log_rv, indexing="ij")
 mY_grid = rv_grid * mX_grid
 off_grid = mY_grid < MY_LIM[0]                       # below the mY floor
