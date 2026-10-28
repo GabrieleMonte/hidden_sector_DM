@@ -135,11 +135,29 @@ at Delta chi2 ~ 16 at (mX, mY) = (115.5, 110). 130 GeV is the margin.
    (min dchi2 there is 8.01, against 6.18).  The seam is smooth: min dchi2 goes 8.01
    at mX = 100 to 8.60 at mX = 101.55, rising monotonically to 26.51 at 129.98.
 
-   STILL OPEN: `GCE_sv_grid_{vP,bP,blP}_south.npz` are untouched, so they are still
-   the local-tree grids on the rescaled-correlation covariance and must not go on a
-   figure beside hP until they are refit.  The same template reuse applies to them
-   (their stored templates are stale only at the same 28 WW* points), so it is about
-   a minute each, not the 2.5 min a full refit costs.
+4. Refit vP, bP and blP under 'paper' too.  DONE 2026-10-28, same template reuse,
+   14 s for all three.  They had to be done: `GCE_fits.ipynb` builds its free-<sigma v>
+   regions straight from the stored `chi2`/`sigmav`/`sigmav_err` (cells 4, 6, 8, 12-15)
+   with nothing recomputed, and `sv_relic_region` in cell 5, although it rebuilds
+   tCt/tCphi/phiCphi with the live Cinv, anchors them on `mod_info['chi2'][k_best]`
+   from the file.  A stale file therefore biased both kinds of region.
+
+   chi2_min, stored -> 'paper', with the best fit moving:
+
+       vP    18.045 (32.94, 20.01) -> 17.281 (33.97, 22.66)
+       bP    18.853 (40.25, 21.60) -> 18.101 (44.16, 30.40)
+       blP   18.948 (27.80, 16.88) -> 17.888 (26.95, 16.36)
+       hP    15.603 (80.58, 76.89) -> 15.095 (73.46, 65.85)
+
+   The relic regions had been drawn with dchi2 too small by those shifts, so slightly
+   too generous.  Inside 3 sigma <sigma v> itself moves by at most 7%; the ratios of
+   several hundred that the rebuild reports all sit at dchi2 ~ 111, where the old fit
+   had sv_hat ~ 1e-30.  No point is clamped at sv = 0 under 'paper' any more.
+
+   `GCE_fits.ipynb` must be re-run from cell 3 to pick any of this up -- its saved
+   outputs predate all four files.  Note also that the extension is a SEPARATE npz, so
+   cell 3's "the same grid in every file" still holds; plotting the hP extension needs
+   a small addition there, which is the notebook's business, not the driver's.
 4. Thermal relic: `GCE/scripts/make_GCE_sv_thermal_relic_grids.py` already
    has the 2026-10-20 coverage fix (RV_MAX 0.995, one coarse row below mY = 5,
    <sigma v> = 0 at mY = mX) and needs a rerun (~2.5 h); its coarse grid stops at
