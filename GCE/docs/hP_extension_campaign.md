@@ -123,9 +123,20 @@ at Delta chi2 ~ 16 at (mX, mY) = (115.5, 110). 130 GeV is the margin.
    and only had to be run through `gls_fit` again.  The 28 WW* templates were the only
    ones rebuilt.  Minutes, not hours.
 3. Fit the extension grid.  DONE 2026-10-28, same pass, 578 points, ~4 min.
-   `make_GCE_sv_grids.py` now carries `PORTALS` / `EXT_PORTALS` and writes
-   `GCE_sv_grid_hP_ext_south.npz` beside the main file, so this is reproducible from
-   the production driver alone.
+   `make_GCE_sv_grids.py` carries `PORTALS` / `EXT_PORTALS` and APPENDS the extension
+   to the portal's own file, so this is reproducible from the production driver alone.
+
+   ONE NPZ PER PORTAL.  The extension is never a file of its own downstream: hP's
+   grids hold 16384 + 578 = 16962 points and the other three hold 16384, with no seam
+   marked and nothing to concatenate at read time.  That holds for all three families
+   the notebook loads -- `GCE_sv_grid_hP_south.npz`,
+   `GCE_sv_thermal_relic_grid_hP.npz` and `relic_grid_hP_eps*.npz` (coarse, 52 x 67
+   against the main grid's 46 x 67, the extension's six columns padded off-domain
+   outside its rv >= 0.6 rows).  The relic solvers keep their own checkpoints under
+   `GCE/output/relic/relic_grid_hP{,_ext}_eps*.npz`; `_merge_into_main` writes the
+   single merged grid into `sv_relic_fits/`, so neither driver's resume is disturbed.
+   `GCE_fits.ipynb` carries `MX_GRID`/`MY_GRID` and `MX_GRID_hP`/`MY_GRID_hP` with a
+   `portal_grid(name)` switch, and every helper now takes the grid it works on.
 
    RESULT. Best fit moves to chi2 = 15.095 at (mX, mY) = (73.46, 65.85), from 15.603
    at (80.58, 76.89) under the old covariance.  Against it the extension holds no

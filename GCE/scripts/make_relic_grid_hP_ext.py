@@ -5,10 +5,16 @@ mX = 100-130 GeV extension, the region the main (15, 100] GeV grid cannot close.
     python GCE/scripts/make_relic_grid_hP_ext.py --dry-run   # grid and ETA
     python GCE/scripts/make_relic_grid_hP_ext.py -n 64
 
-Four files land in GCE/output/relic/, beside the main grid and never into it:
+Four solver files land in GCE/output/relic/, beside the main grid and never into
+it, so neither driver's checkpoint can clobber the other's:
 
     relic_grid_hP_ext_eps1e-07.npz    relic_grid_hP_ext_eps1e-09.npz
     relic_grid_hP_ext_eps1e-08.npz    relic_grid_hP_ext_eps1e-10.npz
+
+Those are checkpoints, not the grid anyone reads.  `_merge_into_main` then pads each
+one onto the main grid's mesh and writes the result to GCE/output/sv_relic_fits/ as
+relic_grid_hP_eps{eps}.npz, 52 x 67 where the main grid is 46 x 67.  That is the
+single file per eps the notebooks load, so nothing downstream concatenates anything.
 
 The model, the lam axis, the solver settings, the checkpointing and the
 crossing extraction are make_relic_grid_hP.py's and make_relic_grid.py's, used
@@ -77,6 +83,14 @@ RV_MIN_EXT = 0.6         # lowest mY/mX kept, matching the Stage-2 spectra; see 
 EPS_JOINT = (1e-7, 1e-8)             # joint route, one output file each
 EPS_SECLUDED = hP.EPS_SECLUDED       # (1e-9, 1e-10), secluded route, one file then split
 
+SV_RELIC_DIR = base.OUT_DIR.parent / "sv_relic_fits"       # what the notebooks read
+EMBED_TOL = 1e-9             # the tolerance make_relic_grid._embed uses on a log axis
+
+# How a node outside the extension's rv range is marked, matching make_relic_grid:
+# off the domain in mass, already "done" so no sweep picks it up, status unrecorded.
+PAD_VALUE = {"mX_grid": np.nan, "mY_grid": np.nan, "coupling_relic": np.nan,
+             "sigmav": np.nan, "done_mask": True, "status": base.STATUS_UNRECORDED}
+
 TAG_STEM = "hP_ext"      # output-name stem; xi_ini != 1 is appended
 
 
@@ -122,6 +136,54 @@ def _split_secluded():
                        d["done_mask"], d["status"][k])
             n_ok = int(np.isfinite(d["coupling_relic"][k]).sum())
             print(f"  {out.name}: {n_ok}/{base.N_VALID} nodes with a crossing")
+
+
+def _merge_into_main():
+    """Pad each extension file onto the main grid's mesh and write the merged grid.
+
+    The two meshes share their log-mX step and the extension's rows ARE main rows,
+    so this is padding, not interpolation: the extension's six columns are placed at
+    the rv rows they were solved on and the rest of those columns are marked
+    off-domain the way make_relic_grid marks one -- mX_grid and mY_grid NaN,
+    done_mask True, status unrecorded.  Nothing is re-solved.
+
+    Writes into SV_RELIC_DIR rather than over the solver's own file, so re-running
+    either driver still resumes from an untouched checkpoint.
+    """
+    for eps in EPS_JOINT + EPS_SECLUDED:
+        main_path = base.OUT_DIR / f"relic_grid_hP_eps{eps:.0e}.npz"
+        ext_path = base.OUT_DIR / f"relic_grid_{base.TAG}_eps{eps:.0e}.npz"
+        if not (main_path.exists() and ext_path.exists()):
+            raise RuntimeError(f"need both {main_path.name} and {ext_path.name}")
+
+        with np.load(main_path) as m, np.load(ext_path) as e:
+            for key in ("coupling_axis", "eps"):
+                if not np.array_equal(m[key], e[key]):
+                    raise RuntimeError(f"{key} differs between the two {eps:.0e} files")
+            log_mX, log_rv = m["log_mX"], m["log_rv"]
+            if e["log_mX"].min() <= log_mX.max():
+                raise RuntimeError("the extension overlaps the main mesh in mX")
+
+            rows = [int(np.argmin(np.abs(log_rv - v))) for v in e["log_rv"]]
+            if max(abs(log_rv[r] - v) for r, v in zip(rows, e["log_rv"])) > EMBED_TOL:
+                raise RuntimeError("the extension's rv rows are not main grid rows")
+
+            n_mx = log_mX.size + e["log_mX"].size
+            out = {"log_mX": np.concatenate([log_mX, e["log_mX"]]), "log_rv": log_rv,
+                   "coupling_axis": m["coupling_axis"], "eps": m["eps"],
+                   "xi_ini": m["xi_ini"], "phase3": m["phase3"], "portal": m["portal"],
+                   "n_done": np.int64(int(m["n_done"]) + int(e["n_done"]))}
+            for key, pad in PAD_VALUE.items():
+                a = np.full((n_mx, log_rv.size), pad, dtype=m[key].dtype)
+                a[:log_mX.size] = m[key]
+                a[log_mX.size:, rows] = e[key]
+                out[key] = a
+
+        SV_RELIC_DIR.mkdir(parents=True, exist_ok=True)
+        np.savez(SV_RELIC_DIR / main_path.name, **out)
+        n_domain = int(np.isfinite(out["mX_grid"]).sum())
+        print(f"  {main_path.name}: {n_mx}x{log_rv.size}, "
+              f"{int(out['n_done'])}/{n_domain} nodes done")
 
 
 def main():
@@ -187,6 +249,12 @@ def main():
         _split_secluded()
     for eps in base.EPS_JOINT:
         base.run_joint(eps, args.ncores)
+
+    # Only a run that produced every eps can write the merged grids; a --only slice
+    # leaves the others untouched and merges once the last slice has landed.
+    if args.only is None:
+        print("merging onto the main grid's mesh:")
+        _merge_into_main()
 
 
 if __name__ == "__main__":

@@ -8,11 +8,12 @@ fit, so <sigma v> is read off the gamma rays alone and no relic constraint enter
     python GCE/scripts/make_GCE_sv_grids.py
 
 Set PORTALS to pick which portals run.  Above the main grid's mX = 100 GeV edge the
-Higgs portal continues over `make_channel_spectra.EXT_GRID`, written to its own file.
+Higgs portal continues over `make_channel_spectra.EXT_GRID`, APPENDED to the main grid
+rather than written to its own file, so one npz is one portal's whole grid and the
+reader never has to know where the seam is.  hP therefore has 16384 + 578 = 16962
+points where the other three have 16384.
 
-Output: GCE/output/sv_fits/
-    GCE_sv_grid_{portal}_{REGION}.npz          the 16384 main-grid points
-    GCE_sv_grid_{portal}_ext_{REGION}.npz      the 578 extension points, hP only
+Output: GCE/output/sv_fits/GCE_sv_grid_{portal}_{REGION}.npz
         mX, mY       [GeV]     the points, in the grid's own order
         chi2                   chi^2 at the best-fit <sigma v>
         sigmav       [cm^3/s]  the GLS <sigma v>, clamped at >= 0
@@ -168,11 +169,19 @@ def fit_grid(name, grid, desc):
 OUT_DIR = ROOT / 'GCE' / 'output' / 'sv_fits'
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-for name in PORTALS:
-    dic = fit_grid(name, GRID, f'{name} main')
-    np.savez(OUT_DIR / f'GCE_sv_grid_{name}_{REGION}.npz', mX=MX_GRID, mY=MY_GRID, **dic)
+def portal_grid(name):
+    """The (2, n) array of (mX, mY) in GeV that portal `name` is fitted on.
 
+    An extended portal carries the mX = 100-130 GeV block appended to the main grid,
+    so its arrays are 578 points longer than the other three.
+    """
     if name in EXT_PORTALS:
-        dic = fit_grid(name, EXT_GRID, f'{name} ext')
-        np.savez(OUT_DIR / f'GCE_sv_grid_{name}_ext_{REGION}.npz',
-                 mX=EXT_GRID[0], mY=EXT_GRID[1], **dic)
+        return np.hstack([GRID, EXT_GRID])
+    else:
+        return GRID
+
+
+for name in PORTALS:
+    grid = portal_grid(name)
+    dic = fit_grid(name, grid, name)
+    np.savez(OUT_DIR / f'GCE_sv_grid_{name}_{REGION}.npz', mX=grid[0], mY=grid[1], **dic)

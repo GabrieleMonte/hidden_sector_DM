@@ -10,13 +10,15 @@ rewritten; this writes its own file.
     cosmo_env
     python GCE/scripts/make_GCE_sv_thermal_relic_grid_hP_ext.py
 
-Output: GCE/output/sv_relic_fits/GCE_sv_thermal_relic_grid_hP_ext.npz
-    mX, mY               [GeV]    the 578 extension points, in the order
-                                  make_channel_spectra.extension_grid gives them
-    coupling_relic                lam giving Omega_c h^2 = OCH2_TARGET, interpolated
-    sigmav_relic         [cm^3/s] the s-wave <sigma v> there
-    mX_coarse, mY_coarse [GeV]    the solved coarse mesh
-    coupling_coarse               lam solved on it (nan where not solved)
+Output: GCE/output/sv_relic_fits/GCE_sv_thermal_relic_grid_hP.npz, APPENDED to
+rather than written beside, so one npz is the portal's whole grid.  The main driver's
+16384 points keep their order and the 578 extension points follow them:
+    mX, mY                   [GeV]    the points, the extension in the order
+                                      make_channel_spectra.extension_grid gives them
+    coupling_relic                    lam giving Omega_c h^2 = OCH2_TARGET
+    sigmav_relic             [cm^3/s] the s-wave <sigma v> there
+    mX_coarse_ext, mY_coarse_ext      this driver's own coarse mesh, kept beside the
+    coupling_coarse_ext               main driver's under a _ext suffix
 
 The target points are imported from make_channel_spectra rather than rebuilt,
 so the thermal relic lands on exactly the (mX, mY) the spectra cache holds.
@@ -56,7 +58,7 @@ from hidden_sector_DM.HiddenSectorDM import (                  # noqa: E402
 )
 from GCE.spectrum import GEVM2_TO_CM3S                         # noqa: E402
 
-from make_channel_spectra import extension_grid                # noqa: E402
+from make_channel_spectra import N_MAIN, extension_grid        # noqa: E402
 
 # ---- configuration -------------------------------------------------------
 
@@ -76,7 +78,7 @@ GX_MAJORANA = 2              # Majorana fermion DM: 2 spin states, no antipartic
 GY_REAL_SCALAR = 1           # real scalar mediator: one degree of freedom
 
 OUT_DIR = ROOT / 'GCE' / 'output' / 'sv_relic_fits'
-OUT_NAME = 'GCE_sv_thermal_relic_grid_hP_ext.npz'
+OUT_NAME = 'GCE_sv_thermal_relic_grid_hP.npz'   # appended to, not written beside
 
 cosmo = Cosmology()
 
@@ -180,9 +182,30 @@ sigmav[MY_GRID >= MX_GRID] = 0.0
 
 print(f'targets: {np.isfinite(sigmav).sum()}/{n_pts} with a <sigma v>')
 
-OUT_DIR.mkdir(parents=True, exist_ok=True)
-np.savez(OUT_DIR / OUT_NAME, mX=MX_GRID, mY=MY_GRID,
-         coupling_relic=coupling, sigmav_relic=sigmav,
-         mX_coarse=10.0**LMX_C, mY_coarse=10.0**(LMX_C + LRV_C),
-         coupling_coarse=coupling_c)
-print(f'-> {OUT_DIR / OUT_NAME}')
+# ---- fold into the portal's grid -----------------------------------------
+# One npz per portal, so the notebook reads one file and never has to know where the
+# seam is.  Idempotent: the main driver's own N_MAIN points are kept and anything
+# after them is replaced, so re-running this appends the extension once, not twice.
+# The coarse mesh is the two drivers' own diagnostic and they solve different ones,
+# so this one is carried under a _ext suffix rather than overwriting the main's.
+
+out_path = OUT_DIR / OUT_NAME
+if not out_path.exists():
+    raise FileNotFoundError(f'{out_path} not found; run '
+                            'make_GCE_sv_thermal_relic_grids.py first')
+
+with np.load(out_path) as d:
+    if d['mX'].size < N_MAIN:
+        raise ValueError(f'{OUT_NAME} holds {d["mX"].size} points, fewer than the '
+                         f'{N_MAIN} of the main grid; rerun the main driver')
+    saved = {k: d[k] for k in d.files}
+
+appended = {'mX': MX_GRID, 'mY': MY_GRID,
+            'coupling_relic': coupling, 'sigmav_relic': sigmav}
+for key, column in appended.items():
+    saved[key] = np.concatenate([saved[key][:N_MAIN], column])
+saved.update(mX_coarse_ext=10.0**LMX_C, mY_coarse_ext=10.0**(LMX_C + LRV_C),
+             coupling_coarse_ext=coupling_c)
+
+np.savez(out_path, **saved)
+print(f'-> {out_path}: {N_MAIN} + {n_pts} = {saved["mX"].size} points')
