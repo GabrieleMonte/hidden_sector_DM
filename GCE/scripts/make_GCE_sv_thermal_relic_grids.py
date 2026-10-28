@@ -1,6 +1,8 @@
+import multiprocessing as mp
+import os
 import sys
 from pathlib import Path
-from tqdm import trange
+from tqdm import tqdm
 import numpy as np
 ROOT = Path.cwd().resolve()
 while ROOT.name and not (ROOT / 'hidden_sector_DM').is_dir():
@@ -73,6 +75,9 @@ N_RV_COARSE  = 34            # rows the uniform log10 rv ladder carries, up to R
 N_RV_BETA    = 4             # rows replacing its top one, uniform in log10 beta
 RV_MAX       = 0.995         # the solve fails at mY = mX; 0.995 covers every GRID point below it
 RELIC_RTOL   = 3e-3
+NCORES       = len(os.sched_getaffinity(0))   # the coarse sweep is one node per task,
+                                              # so this tracks whatever the allocation
+                                              # (or the login node) actually gives us
 
 # Per relic computation: the coupling searched, its starting guess, and n in
 # Omega ~ coupling^-n, which sets the first scaled step.
@@ -161,17 +166,33 @@ RV_STEP = 10.0 ** (lrv_c[1] - lrv_c[0])      # one coarse row in mY/mX, at the b
 
 n_pts = GRID.shape[1]
 
+def _solve_node(task):
+    """One coarse node, for the pool: (portal, i, j, mX, mY) -> (i, j, coupling)."""
+    portal, i, j, mX, mY = task
+    return i, j, _coupling_relic(portal, mX, mY)
+
+
 def relic_grid(portal):
     """Solve the coupling on the coarse grid, interpolate log10 of it onto GRID,
     and evaluate the s-wave <sigma v> there [cm^3/s]."""
-    coupling_c = np.full(LMX_C.shape, np.nan)
-    for i in trange(N_MX_COARSE, desc=portal):
+    tasks = []
+    for i in range(N_MX_COARSE):
         for j in range(lrv_c.size):
             mX = 10.0 ** LMX_C[i, j]
             mY = mX * 10.0 ** LRV_C[i, j]
             # one row below the mY floor, so the interpolation covers mY = MY_LIM[0]
             if MY_LIM[0] / RV_STEP <= mY <= RV_MAX * mX:
-                coupling_c[i, j] = _coupling_relic(portal, mX, mY)
+                tasks.append((portal, i, j, mX, mY))
+
+    # Every node is independent: its own brentq around solve_boltzmann_thermSM, reading
+    # `cosmo` and nothing else, writing only its own cell.  So the sweep is a plain map,
+    # and the numbers do not depend on NCORES.  'fork' because this module has no
+    # __main__ guard -- under 'spawn' each worker would re-execute it.
+    coupling_c = np.full(LMX_C.shape, np.nan)
+    with mp.get_context('fork').Pool(NCORES) as pool:
+        for i, j, coupling in tqdm(pool.imap_unordered(_solve_node, tasks, chunksize=1),
+                                   total=len(tasks), desc=portal):
+            coupling_c[i, j] = coupling
 
     ok_c = np.isfinite(coupling_c)
     coupling = 10.0 ** griddata(

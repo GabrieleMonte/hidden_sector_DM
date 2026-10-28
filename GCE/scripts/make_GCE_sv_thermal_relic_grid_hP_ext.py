@@ -47,13 +47,15 @@ uniform in log10 rv leaves one interval spanning several fine rows.  The two
 drivers' meshes must be changed together, as their root-finds must.
 """
 
+import multiprocessing as mp
+import os
 import sys
 from pathlib import Path
 
 import numpy as np
 from scipy.optimize import brentq
 from scipy.interpolate import griddata
-from tqdm import trange
+from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -71,6 +73,7 @@ from make_channel_spectra import N_MAIN, extension_grid        # noqa: E402
 OCH2_TARGET = 0.12
 RV_MAX      = 0.995          # the solve fails at mY = mX
 RELIC_RTOL  = 3e-3
+NCORES      = len(os.sched_getaffinity(0))   # as in the main driver: one node per task
 
 N_RV_BETA   = 4              # top rv rows placed by beta, not by log10 rv
 N_MX_COARSE = 8              # coarse mesh before padding; the extension spans only
@@ -170,20 +173,40 @@ print(f'coarse mesh {LMX_C.shape[0]} x {LMX_C.shape[1]} = {LMX_C.size} nodes, '
 
 # ---- solve the coarse mesh, interpolate, evaluate <sigma v> --------------
 
-coupling_c = np.full(LMX_C.shape, np.nan)
-n_failed = 0
+def _solve_node(task):
+    """One coarse node, for the pool: (i, j, mX, mY) -> (i, j, coupling, message).
 
-for i in trange(LMX_C.shape[0], desc='hP ext'):
+    The failure is carried back rather than raised, so one bad node still cannot kill
+    the sweep now that it runs in a worker.
+    """
+    i, j, mX, mY = task
+    try:
+        return i, j, _coupling_relic(mX, mY), ''
+    except Exception as exc:
+        return i, j, np.nan, f'  FAILED mX={mX:.2f} mY={mY:.2f}: {exc}'
+
+
+tasks = []
+for i in range(LMX_C.shape[0]):
     for j in range(LMX_C.shape[1]):
         mX = 10.0**LMX_C[i, j]
         mY = mX*10.0**LRV_C[i, j]
         if mY > RV_MAX*mX:
             continue
-        try:
-            coupling_c[i, j] = _coupling_relic(mX, mY)
-        except Exception as exc:              # one bad node must not kill the sweep
+        tasks.append((i, j, mX, mY))
+
+# See the note on relic_grid in make_GCE_sv_thermal_relic_grids.py: the nodes are
+# independent, so the sweep is a map and the numbers do not depend on NCORES.
+coupling_c = np.full(LMX_C.shape, np.nan)
+n_failed = 0
+with mp.get_context('fork').Pool(NCORES) as pool:
+    for i, j, coupling, message in tqdm(pool.imap_unordered(_solve_node, tasks,
+                                                            chunksize=1),
+                                        total=len(tasks), desc='hP ext'):
+        coupling_c[i, j] = coupling
+        if message:
             n_failed += 1
-            print(f'  FAILED mX={mX:.2f} mY={mY:.2f}: {exc}', flush=True)
+            print(message, flush=True)
 
 ok_c = np.isfinite(coupling_c)
 print(f'coarse: {ok_c.sum()}/{coupling_c.size} solved, {n_failed} raised')
