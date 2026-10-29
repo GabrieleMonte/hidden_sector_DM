@@ -220,6 +220,16 @@ Interpolating in log beta was rejected: hP's lam barely moves with rv and turns 
 near rv = 0.995, so it is not smooth in beta either.  It is the row PLACEMENT that
 matters, not the interpolation variable, which is why the fix leaves griddata alone.
 
+OUTCOME (job 60471821, 2 min 49 s on one `debug` node at 64 workers).  Against the
+exact solves the new grid is within 3.9% for vP and 1.5% for hP, where the old one was
++64.4% and +8.5%.  The thermal relic <sigma v> at rv 0.95-0.98 falls from 2.17e-26 to
+1.38e-26 for the vector portals and 1.78e-26 to 1.85e-26 for hP.  Regions shrink
+modestly: with rho profiled the 99% contour goes 0.985 -> 0.969 in rv for vP and bP and
+0.969 -> 0.954 for blP, hP unchanged at 0.985; with rho fixed only bP moves, 0.955 ->
+0.911.  bP's apparent agreement at rv ~ 0.96 was largely the artefact -- its relic/free
+<sigma v> ratio there drops from 0.87 to 0.55 -- and with rho fixed hP now reaches
+higher in rv (0.940) than bP (0.911), reversing the order the bug produced.
+
 `make_relic_grid.py` carries the same spacing so a coupling read off either mesh
 agrees.  There the beta rows are APPENDED above the old ladder top of 0.95 rather than
 interleaved, and the first 67 rows are unchanged to the last bit: `load_state` still
