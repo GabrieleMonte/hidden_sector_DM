@@ -1,0 +1,43 @@
+__pycache__/
+.DS_Store
+*.pyc
+*.pyo
+*.o
+.ipynb_checkpoints/
+*.egg-info/
+output/
+.idea/
+push.sh
+references/
+CLAUDE.md
+
+# docs/: only publish the compiled PDF
+docs/*
+!docs/hidden_sector_DM_toolkit.pdf
+
+# Figure folders
+figs/
+
+# GCE/output/ is tracked despite the output/ rule above: the fits and relic grids
+# are what GCE/notebooks/paper_figs.ipynb reads, and cost cluster time to rebuild
+!GCE/output/
+!GCE/output/**
+
+# Legacy and tests folders (anywhere in the tree)
+**/legacy/
+**/legacy_*/
+**/_legacy/
+**/legacy_and_tests/
+**/tests/
+notebooks/legacy*.ipynb
+
+# Mathematica: old (non-v2) versions
+mathematica/MsqTerms_YXX_XX_hP/
+mathematica/MsqTerms_YXX_XX_vP/
+mathematica/MsqTerms_YYX_YX_hP/
+mathematica/MsqTerms_YYX_YX_vP/
+mathematica/XX_YY_hP_and_vP.nb
+mathematica/YXX_XX_hP.nb
+mathematica/YXX_XX_vP.nb
+mathematica/YYX_YX_hP.nb
+mathematica/YYX_YX_vP.nb

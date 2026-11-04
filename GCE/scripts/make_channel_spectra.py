@@ -1,0 +1,240 @@
+"""Build the library of per-channel photon spectra over the (mX, mY) grid,
+one process per core.
+
+    cosmo_env                                         # from the repository root
+    python GCE/scripts/make_channel_spectra.py       # every core it can see
+    python GCE/scripts/make_channel_spectra.py -n 128
+
+No portal appears below.  A cached spectrum is counts PER DECAY of one channel;
+branching ratios only weight them later, in `cascade_spectrum`.  So every
+channel runs at every point with BR = 1, and one cache serves any model --
+including channels a given portal never opens.
+
+One task is one (mX, mY), writing one .npz per open channel into `OUT_DIR`.
+Existing files are loaded rather than regenerated, so a job killed at the wall
+clock is simply relaunched.
+
+Above mX = 100 GeV the grid carries a Higgs-portal extension (`extension_grid`)
+and the paragraph above stops holding: there, only that portal's channels are
+generated.  See the comment on EXT_CHANNELS.
+"""
+
+import argparse
+import multiprocessing as mp
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # sibling scripts
+
+from GCE.source.pythia_runner import (                             
+    CHANNEL_TO_PDG, PythiaRunner, channels_for_species, min_mY, run_spectrum,
+    spectrum_path,
+)
+from GCE.source.spectrum import default_ebins                      
+
+# ---- configuration -------------------------------------------------------
+
+MX_LIM = (15.0, 100.0)   # GeV
+MY_LIM = (5.0, 100.0)    # GeV, capped from above by mX
+N_POINTS = 16384
+N_COLS = 124
+DECIMALS = 2
+
+def triangle_grid(n_points=N_POINTS, n_cols=N_COLS, mx_lim=MX_LIM, my_lim=MY_LIM,
+                  decimals=DECIMALS):
+    """The grid as a (2, `n_points`) array of (mX, mY) in GeV."""
+    u = np.linspace(*np.log10(mx_lim), n_cols)          # log10 mX per column
+    v_lo = np.log10(my_lim[0])
+    v_hi = np.minimum(u, np.log10(my_lim[1]))           # the mY <= mX edge
+    height = v_hi - v_lo
+    if not (height > 0).all():
+        raise ValueError('some column has no room in mY; check the limits')
+
+    # Points per column, proportional to column height.  Largest-remainder
+    # apportionment, so the total is exactly `n_points`.
+    raw = height/height.sum()*n_points
+    n = np.floor(raw).astype(int)
+    short = n_points - n.sum()
+    if short:
+        n[np.argsort(n - raw)[:short]] += 1
+    if n.min() < 2:
+        raise ValueError(f'column of {n.min()} point(s): lower N_COLS')
+
+    mX = np.repeat(10.0**u, n)
+    mY = np.concatenate([10.0**np.linspace(v_lo, hi, k)
+                         for hi, k in zip(v_hi, n)])
+    return np.round(np.vstack([mX, mY]), decimals)
+
+
+# ---- the Higgs-portal extension, mX = 100-130 GeV ------------------------
+# The hP favoured region reaches the mX = 100 GeV edge of the main grid along
+# the mY ~ mX diagonal with its 2- and 3-sigma contours still open, so the
+# grid is continued to 130 GeV for that portal alone.  The main grid's own
+# limits are untouched: moving MX_LIM would move all 16384 of its points and
+# invalidate the cache behind them.
+#
+# Unlike the main grid, this block is PORTAL-SPECIFIC, which is the one place
+# this module knows about a portal.  A vector- or baryon-portal extension into
+# the same range would have to generate its own channels rather than find them
+# already cached.
+EXT_N_COLS = 17                 # mX = 10^(2 + k du), k = 1 .. 17 -> 101.55-129.98
+EXT_RV_LIM = (0.6, 1.0)         # mY / mX; mY runs up to mX, NOT capped at 100
+EXT_N_RV = 34                   # rows per column, at the main grid's log-mY density
+# phi's photon channels over the extension's 60.93 <= mY <= 129.98, i.e.
+# channels_for_species(phi_branching_ratios(mY), SPECIES) unioned over it.
+# Named here rather than imported so this module keeps no portal dependency.
+# The `mY < min_mY(ch)` skip in run_point still gates each one, which opens
+# WW at 272 of the 578 points and ZZ at 153.
+EXT_CHANNELS = ['bb', 'cc', 'tautau', 'gg', 'ss', 'mumu', 'gamgam', 'WW', 'ZZ']
+
+
+def extension_grid(n_cols=EXT_N_COLS, rv_lim=EXT_RV_LIM, n_rv=EXT_N_RV, mx_lim=MX_LIM,
+                   n_main_cols=N_COLS, decimals=DECIMALS):
+    """The Higgs-portal extension as a (2, `n_cols` * `n_rv`) array of (mX, mY).
+
+    Columns continue the main grid's log-mX step du past its upper limit, so
+    the seam has neither a gap nor a repeated column.  Rows are evenly spaced
+    in log mY between `rv_lim` * mX and mX, at the main grid's log-mY density
+    (its mX = 100 column: 193 points over log10(100/5), dv = 0.0067762 dex;
+    34 points over log10(1/0.6) gives 0.0067227).
+    """
+    du = np.diff(np.log10(mx_lim))[0]/(n_main_cols - 1)
+    mX = 10.0**(np.log10(mx_lim[1]) + du*np.arange(1, n_cols + 1))
+    rv = 10.0**np.linspace(*np.log10(rv_lim), n_rv)         # mY / mX per row
+    return np.round(np.vstack([np.repeat(mX, n_rv),
+                               (mX[:, None]*rv[None, :]).ravel()]), decimals)
+
+
+MAIN_GRID = triangle_grid()     # (2, 16384) masses in GeV
+EXT_GRID = extension_grid()     # (2, 578), Higgs portal only
+GRID = np.hstack([MAIN_GRID, EXT_GRID])
+N_MAIN = MAIN_GRID.shape[1]     # points before the seam, so `channels_at` can find it
+N_EVENTS = 400_000
+SEED = 12345
+SPECIES = 'gamma'               # picks the channels; the .npz holds all targets
+N_BINS = 180                    # `default_ebins` resolution, per point
+# Compute nodes mount /global/homes over DVS, which is slow for the ~157k
+# small files a full grid writes.  $CHANNEL_SPECTRA_DIR points the run at
+# $PSCRATCH instead; unset, it keeps writing into the repo as before.
+OUT_DIR = Path(os.environ.get('CHANNEL_SPECTRA_DIR',
+                              Path(__file__).resolve().parents[1] / 'channel_spectra'))
+
+# Every channel Pythia can shower, with BR = 1 so none is dropped for being
+# small.  Neutrino channels still go, since they make no photons at all.
+CHANNELS = [ch for ch, _br in channels_for_species({c: 1.0 for c in CHANNEL_TO_PDG}, SPECIES)]
+_RUNNER = None                  # one Pythia per worker process, never pickled
+
+
+def channels_at(i):
+    """The channels grid point `i` owes: every one the cache carries below the
+    seam at mX = 100, the Higgs portal's alone above it."""
+    return CHANNELS if i < N_MAIN else EXT_CHANNELS
+
+def run_point(i):
+    """Run every open channel of grid point `i`.  Returns '' on success."""
+    global _RUNNER
+    mX, mY = (float(v) for v in GRID[:, i])
+    ebins = default_ebins(mX, n_bins=N_BINS)
+    ch = ''
+    try:
+        if _RUNNER is None:                 # 128 of these start at once
+            _RUNNER = PythiaRunner(seed=SEED)
+        for ch in channels_at(i):
+            if mY < min_mY(ch):
+                # Y is too light to decay this way, too light for Pythia to
+                # fragment a heavy-flavour pair into real hadrons, or -- for
+                # V V* -- below one on-shell V plus M_OFFSHELL_MIN.
+                # cascade_spectrum skips the channel there too, so the file
+                # would never be read.
+                continue
+            run_spectrum(_RUNNER, mX, mY, ch, N_EVENTS, ebins, OUT_DIR,
+                         verbose=False)
+    except Exception as exc:                # one bad point must not kill the pool
+        return f'FAILED mX={mX:g} mY={mY:g} [{ch}]: {exc}'
+    return ''
+
+
+# Everything below runs the grid.  It is guarded so that `extension_grid`,
+# `triangle_grid`, `GRID` and `channels_at` can be imported -- by a downstream
+# fit script, or by --check tooling -- without starting a 256-way pool, which
+# importing this module used to do.
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('-n', '--ncores', type=int,
+                        default=len(os.sched_getaffinity(0)))
+    # Sharding across cluster ranks.  Not configuration -- like --ncores it says
+    # how to run, not what to compute -- so it stays a flag.  Rank `w` of `W` takes
+    # GRID columns w, w+W, w+2W, ...: a stride rather than a contiguous block,
+    # because cost rises smoothly with mY along a column and a block would hand one
+    # rank all the expensive points.  Every rank writes into the same OUT_DIR; that
+    # is safe because run_spectrum skips an existing file and renames its own
+    # temporary into place, so an overlap costs time, never a corrupt file.
+    ap.add_argument('--worker', type=int, default=0, metavar='W',
+                    help="this rank's index, 0 <= W < --nworkers (default 0)")
+    ap.add_argument('--nworkers', type=int, default=1, metavar='N',
+                    help='number of cluster ranks sharing the grid (default 1)')
+    ap.add_argument('--check', action='store_true',
+                    help='report what is still missing and exit; starts no Pythia')
+    args = ap.parse_args()
+    if not 0 <= args.worker < args.nworkers:
+        ap.error(f'--worker must satisfy 0 <= {args.worker} < {args.nworkers}')
+
+    todo = list(range(args.worker, GRID.shape[1], args.nworkers))
+    # Longest-processing-time-first.  Cost per point climbs monotonically with mY
+    # (more phase space to shower: ~10 core-min at mY=5, ~26 at mY=100), and the
+    # grid is built in ascending mY, so the default order leaves every rank's most
+    # expensive points for the end -- exactly the ragged tail that decides the
+    # makespan.  Handing the pool the heavy points first lets the cheap ones fill
+    # in behind them.
+    if args.check:
+        # Which (point, channel) files this rank's slice still owes.  Mirrors the
+        # `mY < min_mY(ch)` skip in run_point exactly, so "0 missing" means
+        # "nothing left to do", not "nothing left that I know how to name".
+        want = miss = 0
+        short_points = []
+        for i in todo:
+            mX, mY = (float(v) for v in GRID[:, i])
+            open_ch = [ch for ch in channels_at(i) if mY >= min_mY(ch)]
+            gap = [ch for ch in open_ch
+                   if not spectrum_path(mX, mY, ch, N_EVENTS, SEED, OUT_DIR).exists()]
+            want += len(open_ch)
+            miss += len(gap)
+            if gap:
+                short_points.append((mX, mY, gap))
+        print(f'rank {args.worker}/{args.nworkers}: {want - miss}/{want} files present, '
+              f'{miss} missing across {len(short_points)} of {len(todo)} points')
+        for mX, mY, gap in short_points[:10]:
+            print(f"  mX={mX:7.2f} mY={mY:7.2f}  missing: {' '.join(gap)}")
+        if len(short_points) > 10:
+            print(f'  ... and {len(short_points) - 10} more points')
+        sys.exit(0 if miss == 0 else 1)
+
+    todo.sort(key=lambda i: -GRID[1, i])
+    n = len(todo)
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f'rank {args.worker}/{args.nworkers}: {n} of {GRID.shape[1]} points '
+          f'({N_MAIN} main + {GRID.shape[1] - N_MAIN} hP extension), '
+          f'<={len(CHANNELS)} channels each, {N_EVENTS} events, '
+          f'{args.ncores} cores -> {OUT_DIR}', flush=True)
+    t0 = time.time()
+
+    with mp.Pool(args.ncores) as pool:
+        for k, msg in enumerate(pool.imap_unordered(run_point, todo, 1), 1):
+            if msg:
+                print(msg, flush=True)
+            if k % 200 == 0 or k == n:
+                dt = time.time() - t0
+                print(f'  {k}/{n}  {dt/60:.0f} min elapsed, '
+                      f'{dt/k*(n-k)/60:.0f} min left', flush=True)
+
+    print(f'done in {(time.time()-t0)/60:.1f} min', flush=True)
+
+
+if __name__ == '__main__':
+    main()
