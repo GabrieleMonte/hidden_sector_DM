@@ -49,6 +49,29 @@ from .model import HiddenSectorModel
 LN_Y_MAX = 354.0
 
 
+def _S_ratio_from_injection(I_inj: float) -> float:
+    """Comoving SM-entropy ratio S_f/S_i from the trajectory injection integral
+    I_inj = int Gamma_Y [B_1 Y_Y - B_1^eq Y_Y^eq]/T dt, summed on the no-injection T and s.
+
+    The SM is reheated by what it absorbs, T -> T S^(1/3) at fixed g*_S, so the
+    instantaneous dS/S = Gamma_Y rho_Y/(s T) dt integrates to S^(4/3) = 1 + (4/3) I_inj.
+    exp(I_inj) is only its first order: it overshoots once the injected energy rivals the
+    SM's (entropy ratios of 50-1700 where ~5 is allowed, vector portal at xi_ini = 2.5,
+    rv ~ 0.87, with Y holding ~200x the SM energy at the handoff).
+
+    Raises
+    ------
+    ValueError
+        If the net SM -> hidden flow exceeds the SM energy (1 + 4 I_inj/3 <= 0).
+    """
+    arg = 1.0 + 4.0/3.0*I_inj
+    if not arg > 0.0:
+        raise ValueError(f'net SM -> hidden energy flow along the trajectory exceeds the SM '
+                         f'energy (I_inj = {I_inj:.3g}); the post-hoc entropy correction '
+                         f'does not apply')
+    return float(arg**0.75)
+
+
 class BoltzmannSolver:
     """
     Model-independent Boltzmann solver for hidden sectors.
@@ -2372,7 +2395,10 @@ class BoltzmannSolver:
                                          - B_1(m_Y/T_SM) * Y_Y^eq(T_SM) ]
 
         where B_1 = rho/n and the inverse-decay term vanishes identically
-        when Y is in SM equilibrium.
+        when Y is in SM equilibrium.  It is summed on the trajectory's own
+        T_SM and s and closed with the SM reheating fed back,
+        S^(4/3) = 1 + (4/3) int (...) dt (_S_ratio_from_injection).  The
+        handoff T_SM is raised by S^(1/3); T_D is not, so xi drops with it.
 
         traj_has_decay toggles the interpretation of Y_Y in the trajectory:
 
@@ -2421,7 +2447,7 @@ class BoltzmannSolver:
             gY         = model.gY
             inc_anti_Y = model.include_antiparticlesY
 
-            ln_S_corr = 0.0
+            I_inj = 0.0
             for i in range(1, len(x_traj)):
                 x_mid   = 0.5*(x_traj[i]  + x_traj[i-1])
                 T_mid   = 0.5*(T_traj[i]  + T_traj[i-1])
@@ -2453,12 +2479,12 @@ class BoltzmannSolver:
                 YY_phys_mid = YY_mid if traj_has_decay else YY_mid*f_survive
 
                 bracket = B1_D*YY_phys_mid - B1_SM*YYeq_SM
-                ln_S_corr += GammaY*bracket/T_mid*dt
+                I_inj += GammaY*bracket/T_mid*dt
 
                 if not traj_has_decay:
                     f_survive *= np.exp(-GammaY*dt)
 
-            S_ratio_corr = float(np.exp(ln_S_corr))
+            S_ratio_corr = _S_ratio_from_injection(I_inj)
 
             # Apply dilution + Y-survival corrections at the handoff.
             YX0 = YX0/S_ratio_corr
@@ -2467,6 +2493,7 @@ class BoltzmannSolver:
             else:
                 YY0 = YY0*f_survive/S_ratio_corr
             T0  = T0*S_ratio_corr**(1.0/3.0)
+            xi0 = TD0/T0  # reheating the SM leaves T_D alone, as in Phase 3
 
             if verbose:
                 print(f'  Y-decay correction: S_ratio_corr={S_ratio_corr:.4f}, '
@@ -2718,7 +2745,7 @@ class BoltzmannSolver:
         if GammaY > 0:
             x_traj, T_traj = bg_ICs['x'], bg_ICs['T']
             xi_traj, YX_traj, YY_traj = bg_ICs['xi'], bg_ICs['YX'], bg_ICs['YY']
-            ln_S_corr = 0.0
+            I_inj = 0.0
             for i in range(1, len(x_traj)):
                 x_mid  = 0.5*(x_traj[i] + x_traj[i-1])
                 T_mid  = 0.5*(T_traj[i] + T_traj[i-1])
@@ -2737,8 +2764,8 @@ class BoltzmannSolver:
                 B1_SM = cosmo.Bfac1(zY_SMm, mY)
                 YYeq_SM = np.exp(np.clip(
                     cosmo.ln_Yeq(zY_SMm, gY, mY, inc_aY, s_mid), -LN_Y_MAX, LN_Y_MAX))
-                ln_S_corr += GammaY*(B1_D*YY_mid - B1_SM*YYeq_SM)/T_mid*dt
-            S_ratio_corr = float(np.exp(ln_S_corr))
+                I_inj += GammaY*(B1_D*YY_mid - B1_SM*YYeq_SM)/T_mid*dt
+            S_ratio_corr = _S_ratio_from_injection(I_inj)
             if S_ratio_corr > S_corr_max:
                 raise ValueError(
                     f'bg_ICs trajectory invalid: the Boltzmann phase ran '
