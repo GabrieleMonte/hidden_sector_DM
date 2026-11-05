@@ -81,11 +81,11 @@ above it.
 
 ### Provenance of the shipped relic grids
 
-The Higgs-portal grids and every thermal grid are `make_relic_grid.py`'s output. The joint and
-secluded grids of the three Z' portals were solved by earlier revisions of the relic code (October
-2026) and are kept as they are; their mesh and coupling axis are the script's, so they load and
-resume, but a rerun will not reproduce them bit for bit. The docstring of `make_relic_grid.py`
-records exactly what differs.
+Every thermal and every secluded grid, and the Higgs-portal joint grids, are
+`make_relic_grid.py`'s output. The joint grids of the three Z' portals were solved by earlier
+revisions of the relic code (October 2026) and are kept as they are; their mesh and coupling axis
+are the script's, so they load and resume, but a rerun will not reproduce them bit for bit. The
+docstring of `make_relic_grid.py` records exactly what differs.
 
 ## The pipeline
 

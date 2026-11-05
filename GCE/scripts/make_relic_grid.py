@@ -49,24 +49,18 @@ coupling_axis (the sampled couplings), eps, coupling_relic, sigmav [cm^3/s], sta
 (see STATUS_*), done_mask, n_done, xi_ini, phase3 and portal.  They double as
 checkpoints: a rerun resumes from them, and an interrupted run is just relaunched.
 
-PROVENANCE OF THE SHIPPED GRIDS.  The hP grids and every thermal grid are this
-script's output.  The vP, bP and blP joint and secluded grids were solved on
-2026-10-10..13 by earlier revisions of it (and, for vP, by the per-xi_ini drivers it
-replaced): before the phase-entry fix of 2026-10-15 (1d99f58edb, solver.py and here),
-the local crossing read, the downward sweep and the 600 s timeout.  Their mesh and
-coupling axis are the ones below, so they load and resume here, but a rerun will not
-reproduce them bit for bit.  Their status is unrecorded (-1).  The vP files carry no
-`phase3` key because their joint nodes mix routes: Phase 3 everywhere at
+PROVENANCE OF THE SHIPPED GRIDS.  Every thermal and every secluded grid, and the hP
+joint grids, are this script's output; the five Z' secluded grids (vP at xi_ini 1,
+0.5 and 2.5, bP, blP) were re-solved with it on 2026-11-04.  The vP, bP and blP JOINT
+grids were solved on 2026-10-10..13 by earlier revisions of it (and, for vP, by the
+per-xi_ini drivers it replaced): before the phase-entry fix of 2026-10-15 (solver.py
+and here), the local crossing read, the downward sweep and the 600 s timeout.  Their
+mesh and coupling axis are the ones below, so they load and resume here, but a rerun
+will not reproduce them bit for bit.  Their status is unrecorded (-1).  The vP joint
+files carry no `phase3` key because their nodes mix routes: Phase 3 everywhere at
 xi_ini = 2.5 and at xi_ini = 1, eps = 1e-9; the legacy route below rv = 0.636 at
 xi_ini = 1, eps = 1e-10 (under 1 % in <sigma v>), and below rv = 0.465 (eps = 1e-9)
 and 0.636 (eps = 1e-10) at xi_ini = 0.5 (at most 4 %).
-
-Their SECLUDED files predate the convergence check as well.  At high rv the secluded
-freeze-out does not converge for alpha >~ 0.05, Omega(alpha) folds, and the
-whole-axis spline those revisions used can return a wrong coupling inside the sampled
-axis.  So they carry values in the rv = 0.95 row, and a minority of nodes at
-rv >~ 0.6 differ from their neighbours by more than 20 % (most at rv >= 0.87).  This
-script records such samples as solve_failed instead.
 """
 
 import argparse
@@ -126,7 +120,7 @@ _ZPRIME = dict(
     },
     n_coupling=8,
     eps_joint=(1e-9, 1e-10),
-    eps_secluded=(1e-11, 5e-12, 1e-12),  # at rv = 0.95 the freeze-out does not
+    eps_secluded=(1e-11, 1e-12),         # at rv = 0.95 the freeze-out does not
                                          # converge for alpha >~ 0.05; those samples
                                          # are recorded as solve_failed
     phase3_require=False,
@@ -249,7 +243,7 @@ ACCEPT_UNCONVERGED_PHASES = (2, 3)       # ...except a joint run that got this f
                                          #
                                          #   phase 1 / 1.5  the phase-entry artifact --
                                          #     never integrated, muX pinned to 0.  Fixed
-                                         #     at source in 1d99f58edb; still rejected.
+                                         #     in solver.py on 2026-10-15; still rejected.
                                          #   phase 2  completed Phase 2 and stopped at
                                          #     xmax because dlnS/dN never reached
                                          #     Sdot_switch_thresh.  That is the weak-
@@ -710,7 +704,7 @@ def node_secluded(task):
     """(i, j) -> coupling_relic and <sigma v> for every eps in EPS_SECLUDED."""
     i, j, mX, mY = task
     omega = _sweep(lambda a: omega_h2_secluded(mX, mY, a),
-                   len(EPS_SECLUDED))                                # (N_COUPLING, 3)
+                   len(EPS_SECLUDED))                                # (N_COUPLING, n_eps)
     found = [_crossing(omega[:, e]) for e in range(len(EPS_SECLUDED))]
     couplings = np.array([c for c, _ in found])
     status = np.array([s for _, s in found], np.int8)
